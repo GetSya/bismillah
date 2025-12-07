@@ -25,34 +25,45 @@ export default function OrdersPage() {
   useEffect(() => { fetchOrders(); }, []);
 
   // Fungsi Proses Order
+  // Fungsi Proses Order (REVISI)
   async function processOrder() {
     if (!credentials) return alert('Mohon isi data akun/voucher!');
     setLoading(true);
 
     try {
+      console.log('Sending data:', {
+        orderId: selectedOrder.id,
+        telegramId: selectedOrder.user_id,
+        accountCredentials: credentials // Cek di console browser apakah ini ada isinya
+      });
+
       const res = await fetch('/api/admin/complete-order', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           orderId: selectedOrder.id,
-          telegramId: selectedOrder.user_id,
+          telegramId: selectedOrder.user_id, // Pastikan kolom database Anda: user_id
           accountCredentials: credentials
         })
       });
 
-      if (res.ok) {
-        alert('Sukses! Pesan terkirim ke user.');
+      const result = await res.json();
+
+      if (res.ok && result.success) {
+        alert('✅ Sukses! Order selesai.');
         setSelectedOrder(null);
         setCredentials('');
         fetchOrders();
       } else {
-        alert('Gagal memproses.');
+        // Tampilkan pesan error spesifik dari server
+        alert(`❌ Gagal: ${result.error || 'Terjadi kesalahan sistem'}`);
       }
     } catch (e) {
       console.error(e);
-      alert('Error koneksi.');
+      alert('❌ Error Koneksi: Cek console browser Anda.');
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   }
 
   return (
