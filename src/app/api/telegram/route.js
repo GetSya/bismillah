@@ -3,267 +3,241 @@ import TelegramBot from 'node-telegram-bot-api';
 import { supabase } from '@/lib/supabase';
 
 // ==========================================
-// ⚙️ KONFIGURASI
+// ⚙️ SETUP & CONFIG
 // ==========================================
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const bot = token ? new TelegramBot(token, { polling: false }) : null;
 
-// Ganti URL ini dengan Link Gambar Logo Toko Anda
-const LOGO_URL = 'https://i.imgur.com/LdOpxjJ.png'; 
+// Ganti sesuai kebutuhan
+const ADMIN_REKENING = { bank: "BCA", no: "123456789", name: "Admin Store" };
 
-const BANK_INFO = {
-    bankName: "BCA",
-    accNumber: "12345678",
-    accName: "Admin Toko"
+// Fungsi Membuat Keyboard Layout Grid Seperti Gambar
+const createMainKeyboard = () => {
+    // 1. Tombol Menu Atas
+    const topRow = [
+        { text: "🏷 List Produk" }, { text: "🛍 Voucher" }, { text: "📦 Laporan Stok" }
+    ];
+
+    // 2. Tombol Angka (Grid 1 s/d 30) - 6 angka per baris
+    const numberGrid = [];
+    let currentRow = [];
+    for (let i = 1; i <= 30; i++) {
+        currentRow.push({ text: `${i}` });
+        // Jika sudah 6 angka, masukkan ke row baru
+        if (currentRow.length === 6) {
+            numberGrid.push(currentRow);
+            currentRow = [];
+        }
+    }
+    if (currentRow.length > 0) numberGrid.push(currentRow);
+
+    // 3. Tombol Bawah
+    const bottomRow = [
+        { text: "💰 Deposit" }, { text: "❓ Cara" }, { text: "⚠️ Information" }
+    ];
+
+    return {
+        keyboard: [
+            topRow,
+            ...numberGrid, // Spread angka ke tengah
+            bottomRow
+        ],
+        resize_keyboard: true, // Agar keyboard pas di layar
+        is_persistent: true,   // Agar keyboard tidak hilang saat diclick
+        input_field_placeholder: "Pilih menu atau nomor..." 
+    };
 };
 
-// Jumlah produk per halaman katalog
-const ITEMS_PER_PAGE = 10;
 
-// ==========================================
-// 🚀 MAIN HANDLER (WEBHOOK)
-// ==========================================
 export async function POST(req) {
-    if (!bot) return NextResponse.json({ error: 'No Token' });
+    if (!bot) return NextResponse.json({ error: 'Bot offline' });
 
     try {
         const body = await req.json();
-
-        // 1. Handle Callback Query (Tombol Next/Prev Katalog)
-        if (body.callback_query) {
-            await handleCallbackQuery(body.callback_query);
-        }
-        // 2. Handle Pesan Teks
-        else if (body.message?.text) {
+        
+        // Kita hanya fokus menangani pesan teks untuk tipe Keyboard ini
+        if (body.message?.text) {
             await handleTextMessage(body.message);
         }
-        // 3. Handle Gambar (Bukti Transfer)
         else if (body.message?.photo) {
             await handlePhotoMessage(body.message);
         }
 
         return NextResponse.json({ status: 'ok' });
     } catch (error) {
-        console.error('Main Error:', error);
-        return NextResponse.json({ status: 'error', message: error.message });
+        console.error('Error:', error);
+        return NextResponse.json({ status: 'error' });
     }
 }
 
 // ==========================================
-// 🧠 LOGIC HANDLER
+// 🧠 LOGIC UTAMA (MENU & ANGKA)
 // ==========================================
 
 async function handleTextMessage(msg) {
     const chatId = msg.chat.id;
-    const text = msg.text;
-    const username = msg.from.username || 'TanpaNama';
+    const text = msg.text; // Text yang diklik user dari keyboard
     const firstName = msg.from.first_name || 'Kak';
 
-    // Update User ke DB
-    await supabase.from('users').upsert({
-        telegram_id: chatId,
-        username: username,
-        full_name: `${firstName} ${msg.from.last_name || ''}`.trim()
-    });
+    // -------------------------------------------
+    // 1. HANDLER TOMBOL ANGKA (1, 2, 3...)
+    // -------------------------------------------
+    // Cek apakah text adalah angka (Integer)
+    if (/^\d+$/.test(text)) {
+        const selectedNumber = parseInt(text);
+        await handleProductSelection(chatId, selectedNumber);
+        return; 
+    }
 
-    // ------------------------------------------
-    // A. Command: /start (TAMPILAN UTAMA LENGKAP)
-    // ------------------------------------------
-    if (text === '/start') {
-        const caption = `
-👋 <b>Halo, ${firstName}!</b>
-Selamat datang di <b>PremiumApp Store</b> 💎
+    // -------------------------------------------
+    // 2. HANDLER MENU NAVIGATION
+    // -------------------------------------------
+    switch (text) {
+        case '/start':
+            const welcomeMsg = `
+👋 <b>Selamat Datang, ${firstName}!</b>
 
-╭───────────────────────╮
-│  <b>PUSAT APLIKASI PREMIUM</b>  │
-╰───────────────────────╯
-Kami menyediakan akun premium legal, bergaransi, dan proses cepat.
-
-📚 <b>PANDUAN PENGGUNAAN:</b>
-1. Ketik /katalog untuk melihat produk.
-2. Pilih produk yang diinginkan.
-3. Lakukan transfer sesuai nominal.
-4. Kirim bukti transfer (Screenshot) di sini.
-5. Tunggu admin memproses akun Anda.
-
-💳 <b>INFO PEMBAYARAN:</b>
-Transfer hanya ke rekening resmi:
-• <b>${BANK_INFO.bankName}:</b> <code>${BANK_INFO.accNumber}</code>
-• <b>A.N:</b> ${BANK_INFO.accName}
-
-ℹ️ <b>ABOUT US:</b>
-• Jam Operasional: 08.00 - 22.00 WIB
-• Garansi: Full Garansi (S&K Berlaku)
-
-👇 <b>MULAI BELANJA:</b>
-Silakan ketik /katalog atau klik menu di bawah.
+Gunakan keyboard di bawah untuk belanja lebih cepat.
+Klik <b>"🏷 List Produk"</b> untuk melihat menu.
 `;
+            await bot.sendMessage(chatId, welcomeMsg, {
+                parse_mode: 'HTML',
+                reply_markup: createMainKeyboard() // Memunculkan Keyboard Custom
+            });
+            break;
+
+        case '🏷 List Produk':
+            await showProductList(chatId);
+            break;
         
-        // Mengirim Gambar Logo + Caption
-        await bot.sendPhoto(chatId, LOGO_URL, {
-            caption: caption,
-            parse_mode: 'HTML'
-        });
-    }
+        case '🛍 Voucher':
+            await bot.sendMessage(chatId, "🔐 Menu Voucher (Redeem) belum tersedia.");
+            break;
+            
+        case '📦 Laporan Stok':
+             await bot.sendMessage(chatId, "📊 Semua stok produk saat ini <b>AMAN / READY</b>.", { parse_mode: 'HTML' });
+             break;
 
-    // ------------------------------------------
-    // B. Command: /katalog (STYLE KARTU / BOX)
-    // ------------------------------------------
-    else if (text === '/katalog') {
-        await sendCatalog(chatId, 1);
-    }
+        case '💰 Deposit':
+            await bot.sendMessage(chatId, `💳 <b>Topup Saldo:</b>\nSilakan chat admin @AdminUser untuk deposit saldo manual.`, { parse_mode: 'HTML' });
+            break;
 
-    // ------------------------------------------
-    // C. Command: /beli_ID
-    // ------------------------------------------
-    else if (text.startsWith('/beli_')) {
-        await handleBuyCommand(chatId, text);
+        case '⚠️ Information':
+            await bot.sendMessage(chatId, `ℹ️ <b>Store Info</b>\nJam Operasional: 09.00 - 23.00 WIB\nBot v2.0 (Fast Response)`);
+            break;
+
+        default:
+             // Jika chat random masuk
+             await bot.sendMessage(chatId, "🤔 Perintah tidak dikenali. Silakan gunakan tombol di bawah.", {
+                reply_markup: createMainKeyboard()
+             });
     }
 }
 
-// ==========================================
-// 📦 KATALOG HANDLER (BOX STYLE)
-// ==========================================
 
-async function sendCatalog(chatId, page) {
-    // 1. Ambil semua produk aktif
-    const { data: products, error } = await supabase
+// ==========================================
+// 📄 LOGIC MENAMPILKAN DAFTAR (STYLE GAMBAR)
+// ==========================================
+async function showProductList(chatId) {
+    // Ambil produk dari Database, urutkan agar ID/Index sesuai
+    // Asumsi di DB produk sudah rapi, kita ambil max 30
+    const { data: products } = await supabase
         .from('products')
         .select('*')
         .eq('is_active', true)
-        .order('name', { ascending: true });
+        .order('id', { ascending: true }) // Atau pakai kolom khusus 'sort_order'
+        .limit(30);
 
     if (!products || products.length === 0) {
-        return bot.sendMessage(chatId, "🙏 Stok produk sedang kosong.");
+        return bot.sendMessage(chatId, "Kosong bosku");
     }
 
-    // 2. Hitung Pagination
-    const totalProducts = products.length;
-    const totalPages = Math.ceil(totalProducts / ITEMS_PER_PAGE);
-    
-    // Pastikan page valid
-    if (page < 1) page = 1;
-    if (page > totalPages) page = totalPages;
+    let message = `🛒 <b>DAFTAR HARGA UPDATE</b>\n`;
+    message += `<i>Silakan klik angka di keyboard sesuai nomor produk.</i>\n\n`;
 
-    const startIdx = (page - 1) * ITEMS_PER_PAGE;
-    const endIdx = startIdx + ITEMS_PER_PAGE;
-    const currentProducts = products.slice(startIdx, endIdx);
-
-    // 3. Buat Tampilan BOX (ASCII ART)
-    // Menggunakan tag <code> agar font monospace dan rapi di HP
-    let message = `<b>🛒 KATALOG PRODUK</b>\n`;
-    message += `<i>Ketik /beli_ID untuk memesan</i>\n\n`;
-    
-    message += `<code class="language-text">`;
-    message += `╭ - - - - - - - - - - - - - - - ╮\n`;
-    message += `┊ LIST PRODUK\n`;
-    message += `┊ page ${page} / ${totalPages}\n`;
-    message += `┊- - - - - - - - - - - - - - - -\n`;
-
-    currentProducts.forEach((p, index) => {
-        // Nomor urut global (bukan per halaman)
-        const globalNum = startIdx + index + 1;
-        // Format harga K (ribuan) agar muat, cth: 15000 -> 15k
-        const priceK = (p.price / 1000) + 'k'; 
+    products.forEach((p, index) => {
+        // Kita gunakan 'index + 1' sebagai Nomor Keyboard (1, 2, 3...)
+        // Jadi user klik '1' akan memilih produk pertama di array ini
+        const itemNumber = index + 1;
+        const price = new Intl.NumberFormat('id-ID').format(p.price);
         
-        // Format baris: [ID] NAMA ... HARGA
-        // Kita pakai ID database asli untuk command beli
-        message += `┊ [${p.id}] ${p.name.padEnd(15).slice(0,15)} ${priceK}\n`;
+        // --- STYLE TEXT SEPERTI GAMBAR ---
+        message += `┊ <b>[${itemNumber}] ${p.name.toUpperCase()}</b>\n`;
+        message += `┊ ↳ Rp ${price} • (Stok Ready)\n`;
+        message += `┊ \n`; 
     });
 
-    message += `╰ - - - - - - - - - - - - - - - ╯`;
-    message += `</code>\n\n`;
-    message += `💡 <b>Cara Beli:</b>\nContoh ketik: <code>/beli_${currentProducts[0].id}</code>`;
+    message += `╰───────────────────────◊`;
 
-    // 4. Buat Tombol Navigasi (Next/Prev)
-    const keyboard = [];
-    const row = [];
-    
-    if (page > 1) {
-        row.push({ text: '⬅️ Prev', callback_data: `page_${page - 1}` });
-    }
-    if (page < totalPages) {
-        row.push({ text: 'Next ➡️', callback_data: `page_${page + 1}` });
-    }
-    keyboard.push(row);
-
-    // Kirim Pesan
+    // Kirim pesan, pastikan keyboard tetap ada
     await bot.sendMessage(chatId, message, {
         parse_mode: 'HTML',
-        reply_markup: { inline_keyboard: keyboard }
+        reply_markup: createMainKeyboard()
     });
 }
 
-// Handle tombol Next/Prev agar pesan terupdate (editMessage)
-async function handleCallbackQuery(query) {
-    const chatId = query.message.chat.id;
-    const messageId = query.message.message_id;
-    const data = query.data;
-
-    if (data.startsWith('page_')) {
-        const page = parseInt(data.split('_')[1]);
-        
-        // Hapus pesan lama dan kirim baru (atau edit pesan)
-        // Note: Mengedit pesan dengan format <code> kadang tricky di telegram bot node
-        // Cara paling aman hapus lalu kirim baru agar posisi paling bawah
-        
-        await bot.deleteMessage(chatId, messageId);
-        await sendCatalog(chatId, page);
-    }
-}
 
 // ==========================================
-// 🛒 BUY HANDLER
+// 🛒 LOGIC PEMBELIAN (SAAT KLIK ANGKA)
 // ==========================================
-async function handleBuyCommand(chatId, text) {
-    const productId = text.split('_')[1];
-
-    const { data: product } = await supabase
+async function handleProductSelection(chatId, selectedNumber) {
+    // 1. Ambil produk lagi untuk dicocokkan dengan nomor urut
+    const { data: products } = await supabase
         .from('products')
         .select('*')
-        .eq('id', productId)
-        .single();
+        .eq('is_active', true)
+        .order('id', { ascending: true })
+        .limit(30);
+    
+    // Array index mulai dari 0, sedangkan user pilih mulai dari 1
+    // Jadi index = nomor - 1
+    const productIndex = selectedNumber - 1;
 
-    if (!product) return bot.sendMessage(chatId, "⚠️ Produk tidak valid.");
+    // Validasi apakah nomor ada produknya
+    if (!products || !products[productIndex]) {
+        return bot.sendMessage(chatId, `⚠️ Produk nomor <b>${selectedNumber}</b> tidak ditemukan pada list.`, {parse_mode: 'HTML'});
+    }
 
-    // Insert Order
-    const { data: order, error } = await supabase.from('orders').insert({
+    const product = products[productIndex];
+
+    // Buat Order Pending di Database
+    const { data: order } = await supabase.from('orders').insert({
         user_id: chatId,
-        product_id: productId,
+        product_id: product.id,
         total_price: product.price,
         status: 'pending'
     }).select().single();
 
-    if (error) return bot.sendMessage(chatId, "⚠️ Gagal membuat pesanan.");
-
-    const price = new Intl.NumberFormat('id-ID').format(product.price);
-
+    // Tampilkan Invoice
+    const priceFormatted = new Intl.NumberFormat('id-ID').format(product.price);
     const invoiceMsg = `
-╭ - - - - - - - - - - - - - - - ╮
-┊ 🧾 <b>INVOICE #${order.id}</b>
-┊- - - - - - - - - - - - - - - -
-┊ <b>Item :</b> ${product.name}
-┊ <b>Total:</b> Rp ${price}
-╰ - - - - - - - - - - - - - - - ╯
+╭──────────────────────╮
+│  🧾 <b>TAGIHAN #${order.id}</b>
+│----------------------
+│ 📦 <b>Item:</b> ${product.name}
+│ 💰 <b>Total:</b> Rp ${priceFormatted}
+╰──────────────────────╯
 
-💳 <b>Silakan Transfer ke:</b>
-<b>${BANK_INFO.bankName}</b>
-<code>${BANK_INFO.accNumber}</code>
-A.N ${BANK_INFO.accName}
+Silakan transfer ke:
+<b>${ADMIN_REKENING.bank}:</b> <code>${ADMIN_REKENING.no}</code>
+<b>A.N:</b> ${ADMIN_REKENING.name}
 
-📸 <b>PENTING:</b>
-Setelah transfer, <b>Kirim FOTO bukti transfer</b> di sini agar diproses otomatis.
+📸 <b>Upload Bukti Transfer:</b>
+Silakan kirim foto/screenshot bukti pembayaran langsung di chat ini.
 `;
+    
+    // Kirim Invoice (tetap biarkan keyboard muncul kalau mau cancel bisa tekan list produk lagi)
     await bot.sendMessage(chatId, invoiceMsg, { parse_mode: 'HTML' });
 }
 
+
 // ==========================================
-// 🖼️ PHOTO HANDLER (Sama seperti sebelumnya)
+// 📸 LOGIC UPLOAD BUKTI (Tetap Sama)
 // ==========================================
 async function handlePhotoMessage(msg) {
     const chatId = msg.chat.id;
 
-    // Cari order pending terakhir
+    // Cari Pending Order
     const { data: pendingOrder } = await supabase
         .from('orders')
         .select('*, products(name)')
@@ -274,48 +248,35 @@ async function handlePhotoMessage(msg) {
         .single();
 
     if (!pendingOrder) {
-        return bot.sendMessage(chatId, "❌ Tidak ada pesanan menunggu pembayaran. Silakan order ulang /katalog.");
+        // Jika user kirim foto tapi gak ada order, abaikan atau beri info
+        return bot.sendMessage(chatId, "😅 Mau order? Silakan klik 'List Produk' dan pilih nomor dulu ya.");
     }
 
-    const waitMsg = await bot.sendMessage(chatId, "⏳ <i>Mengupload bukti...</i>", {parse_mode: 'HTML'});
+    await bot.sendMessage(chatId, "⏳ Sedang upload bukti...");
 
     try {
-        const photo = msg.photo[msg.photo.length - 1];
-        const fileLink = await bot.getFileLink(photo.file_id);
-        const imageRes = await fetch(fileLink);
-        const imageBlob = await imageRes.blob();
+        const fileId = msg.photo[msg.photo.length - 1].file_id;
+        const fileLink = await bot.getFileLink(fileId);
+        const res = await fetch(fileLink);
+        const blob = await res.blob();
         
-        const fileName = `proof_${pendingOrder.id}_${Date.now()}.jpg`;
+        const fileName = `pay_${pendingOrder.id}_${Date.now()}.jpg`;
 
-        // Upload Supabase
-        const { error: uploadError } = await supabase.storage
-            .from('payment-proofs')
-            .upload(fileName, imageBlob, { contentType: 'image/jpeg' });
-
-        if (uploadError) throw uploadError;
-
-        const { data: { publicUrl } } = supabase.storage
-            .from('payment-proofs')
-            .getPublicUrl(fileName);
+        // Upload ke Bucket 'proofs'
+        const { error } = await supabase.storage.from('proofs').upload(fileName, blob, { contentType: 'image/jpeg'});
+        if(error) throw error;
 
         // Update DB
-        await supabase.from('orders').update({
-            payment_proof_url: publicUrl,
-            status: 'paid' // Atau 'verification' tergantung flow
+        const { data: { publicUrl } } = supabase.storage.from('proofs').getPublicUrl(fileName);
+        await supabase.from('orders').update({ 
+            status: 'verification', 
+            payment_proof_url: publicUrl 
         }).eq('id', pendingOrder.id);
 
-        await bot.deleteMessage(chatId, waitMsg.message_id);
+        await bot.sendMessage(chatId, `✅ <b>Bukti Masuk!</b>\nPesanan <b>${pendingOrder.products.name}</b> sedang dicek admin. Tunggu sebentar ya.`);
 
-        await bot.sendMessage(chatId, `
-✅ <b>BUKTI DITERIMA</b>
-Order #${pendingOrder.id} (${pendingOrder.products?.name})
-
-Mohon tunggu admin memverifikasi pembayaran Anda.
-`, { parse_mode: 'HTML' });
-
-    } catch (err) {
-        console.error(err);
-        await bot.deleteMessage(chatId, waitMsg.message_id);
-        await bot.sendMessage(chatId, "⚠️ Gagal upload bukti. Coba lagi.");
+    } catch (e) {
+        console.error(e);
+        await bot.sendMessage(chatId, "❌ Gagal upload bukti. Coba lagi.");
     }
 }
