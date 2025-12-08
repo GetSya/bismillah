@@ -313,7 +313,7 @@ Setelah transfer, silakan kirim <b>Foto/Screenshot Bukti</b> di chat ini.
 async function handlePhotoMessage(msg) {
     const chatId = msg.chat.id;
 
-    // Cek pesanan 'pending' terakhir milik user ini
+    // Cek pesanan 'pending'
     const { data: order } = await supabase
         .from('orders')
         .select('*, products(name)')
@@ -324,56 +324,56 @@ async function handlePhotoMessage(msg) {
         .single();
 
     if (!order) {
-        return bot.sendMessage(chatId, "❌ Tidak ada pesanan aktif. Silakan pilih produk dari List Produk.");
+        return bot.sendMessage(chatId, "❌ Tidak ada pesanan aktif. Pilih produk dari list dulu ya.");
     }
 
-    // Notifikasi proses
     const loadingMsg = await bot.sendMessage(chatId, "⏳ <i>Mengupload bukti transfer...</i>", {parse_mode:'HTML'});
 
     try {
-        // Ambil ID File terbesar (Resolusi terbaik)
-        const photo = msg.photo[msg.photo.length - 1];
+        const photo = msg.photo[msg.photo.length - 1]; 
         const fileUrl = await bot.getFileLink(photo.file_id);
         
-        // Fetch Image Blob
+        // Fetch gambar jadi Buffer
         const response = await fetch(fileUrl);
-        const buffer = await response.blob();
-        
-        // Buat nama file unik
+        const arrayBuffer = await response.arrayBuffer();
+        const buffer = Buffer.from(arrayBuffer); 
+
         const filename = `proof_${order.id}_${Date.now()}.jpg`;
 
-        // Upload ke Supabase Storage (Bucket: proofs)
+        // 👇 PERUBAHAN ADA DISINI (proofs -> payment-proofs)
+        // Gunakan nama bucket sesuai screenshot Anda: 'payment-proofs'
         const { error: uploadError } = await supabase.storage
-            .from('proofs')
-            .upload(filename, buffer, { contentType: 'image/jpeg' });
+            .from('payment-proofs') 
+            .upload(filename, buffer, { 
+                contentType: 'image/jpeg',
+                upsert: true
+            });
         
         if (uploadError) throw uploadError;
 
         // Dapatkan URL Public
-        const { data: publicUrlData } = supabase.storage.from('proofs').getPublicUrl(filename);
+        const { data: publicUrlData } = supabase.storage
+            .from('payment-proofs') // 👇 Disini juga harus diganti
+            .getPublicUrl(filename);
         
-        // Update Order jadi 'verification'
+        // Update DB
         await supabase.from('orders').update({
             status: 'verification',
             payment_proof_url: publicUrlData.publicUrl
         }).eq('id', order.id);
 
-        // Hapus pesan loading
         await bot.deleteMessage(chatId, loadingMsg.message_id);
 
-        // Sukses
         await bot.sendMessage(chatId, `
 ✅ <b>BUKTI DITERIMA!</b>
-
-Order ID: <b>#${order.id}</b>
-Item: <b>${order.products?.name}</b>
-
-Admin akan mengecek bukti pembayaran. Jika valid, produk akan dikirim secepatnya.
+Order #${order.id} (${order.products?.name})
+Mohon tunggu verifikasi admin.
 `, { parse_mode: 'HTML' });
 
     } catch (error) {
-        console.error("Upload Failed", error);
+        console.error("Upload Error:", error);
         await bot.deleteMessage(chatId, loadingMsg.message_id);
-        await bot.sendMessage(chatId, "⚠️ Gagal mengupload gambar. Silakan coba lagi.");
+        // Tips: Jika error, kirim pesan error spesifik biar tau masalahnya
+        await bot.sendMessage(chatId, `⚠️ Gagal Upload. Error: ${error.message}`);
     }
 }
