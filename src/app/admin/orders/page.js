@@ -42,10 +42,14 @@ export default function OrdersPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           orderId: selectedOrder.id,
-          telegramId: selectedOrder.user_id, // Pastikan kolom database Anda: user_id
+          telegramId: selectedOrder.user_id,
           accountCredentials: credentials
         })
       });
+
+      // --- DEBUGGING: BACA SEBAGAI TEXT DULU ---
+      const textResponse = await res.text(); 
+      console.log("Raw Server Response:", textResponse); // Cek Console Browser!
 
       const result = await res.json();
 
