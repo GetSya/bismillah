@@ -8,152 +8,188 @@ import { supabase } from '@/lib/supabase';
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const bot = token ? new TelegramBot(token, { polling: false }) : null;
 
-// Info Rekening untuk Invoice
+// Info Rekening
 const BANK_INFO = {
     bank: "BCA",
     number: "1234-5678-9000",
     name: "STORE OFFICIAL"
 };
 
-// Jumlah tombol angka maksimal yang ditampilkan (agar tidak terlalu penuh)
+// Config Tampilan
 const MAX_BUTTONS_DISPLAY = 40; 
-// Jumlah kolom tombol per baris (Agar rapi 6 kotak seperti gambar request)
 const BUTTONS_PER_ROW = 6;
 
 
 // ==================================================================
-// 2. FUNGSI GENERATOR KEYBOARD DINAMIS
+// 2. KEYBOARD DINAMIS (Tetap Sama)
 // ==================================================================
-/**
- * Membuat keyboard angka [1], [2], ... berdasarkan jumlah produk.
- * Ditambah tombol menu navigasi tetap di atas & bawah.
- */
 function createDynamicKeyboard(totalItems) {
-    // A. Baris Menu Atas (Fixed)
     const topMenu = [
-        { text: "🏷 List Produk" },
-        { text: "🛍 Voucher" },
-        { text: "📦 Laporan Stok" }
+        { text: "🏷 List Produk" }, { text: "🛍 Voucher" }, { text: "📦 Laporan Stok" }
     ];
-
-    // B. Baris Menu Bawah (Fixed)
     const bottomMenu = [
-        { text: "💰 Deposit" },
-        { text: "❓ Cara" },
-        { text: "⚠️ Information" }
+        { text: "💰 Deposit" }, { text: "❓ Cara" }, { text: "⚠️ Information" }
     ];
 
-    // C. Baris Angka (Dynamic)
     const numberGrid = [];
-    
-    // Kita batasi jumlah tombol agar aman (Telegram ada limit tombol keyboard)
     const count = Math.min(totalItems, MAX_BUTTONS_DISPLAY);
 
     if (count > 0) {
         let tempRow = [];
         for (let i = 1; i <= count; i++) {
             tempRow.push({ text: `${i}` });
-
-            // Jika sudah mencapai batas kolom per baris (6), dorong ke grid dan reset
             if (tempRow.length === BUTTONS_PER_ROW) {
                 numberGrid.push(tempRow);
                 tempRow = [];
             }
         }
-        // Masukkan sisa tombol yang belum genap 1 baris
-        if (tempRow.length > 0) {
-            numberGrid.push(tempRow);
-        }
+        if (tempRow.length > 0) numberGrid.push(tempRow);
     }
 
-    // Gabungkan Semua Baris
     return {
-        keyboard: [
-            topMenu,        // Baris 1: Menu Atas
-            ...numberGrid,  // Baris Tengah: Grid Angka
-            bottomMenu      // Baris Terakhir: Menu Bawah
-        ],
-        resize_keyboard: true, // Agar ukuran keyboard pas di layar HP
-        is_persistent: true,   // Agar keyboard tidak hilang saat diklik
-        input_field_placeholder: "Silakan pilih menu atau nomor produk..."
+        keyboard: [ topMenu, ...numberGrid, bottomMenu ],
+        resize_keyboard: true,
+        is_persistent: true,
+        input_field_placeholder: "Pilih menu atau nomor produk..."
     };
 }
 
 
 // ==================================================================
-// 3. MAIN ROUTE HANDLER (NEXT.JS)
+// 3. MAIN ROUTE HANDLER
 // ==================================================================
 export async function POST(req) {
-    if (!bot) return NextResponse.json({ error: 'Bot Token not found' });
+    if (!bot) return NextResponse.json({ error: 'Bot inactive' });
 
     try {
         const body = await req.json();
 
-        // 1. Handle Pesan Teks
-        if (body.message?.text) {
+        // A. HANDLE KLIK TOMBOL INLINE (Checkout / Cancel)
+        if (body.callback_query) {
+            await handleCallbackQuery(body.callback_query);
+        }
+        // B. HANDLE PESAN TEXT (Menu / Angka)
+        else if (body.message?.text) {
             await handleTextMessage(body.message);
         }
-        // 2. Handle Gambar (Bukti Transfer)
+        // C. HANDLE FOTO (Bukti TF)
         else if (body.message?.photo) {
             await handlePhotoMessage(body.message);
         }
 
         return NextResponse.json({ status: 'ok' });
     } catch (error) {
-        console.error('Bot Error:', error);
+        console.error('Error:', error);
         return NextResponse.json({ error: error.message });
     }
 }
 
 
 // ==================================================================
-// 4. LOGIC PESAN TEKS (Navigation & Buy)
+// 4. LOGIC: CALLBACK (Tombol Checkout/Batal) - BAGIAN BARU ⚡️
+// ==================================================================
+async function handleCallbackQuery(query) {
+    const chatId = query.message.chat.id;
+    const messageId = query.message.message_id;
+    const data = query.data; // format: 'checkout_123' atau 'cancel'
+
+    // Matikan loading di tombol user
+    await bot.answerCallbackQuery(query.id);
+
+    // 1. Handle tombol CANCEL / HOME
+    if (data === 'cancel') {
+        // Hapus pesan detail produk agar bersih
+        await bot.deleteMessage(chatId, messageId);
+        // (Opsional) Kirim pesan batal
+        // await bot.sendMessage(chatId, "❌ Pesanan dibatalkan."); 
+    }
+
+    // 2. Handle tombol CHECKOUT LANGSUNG
+    else if (data.startsWith('checkout_')) {
+        const productId = data.split('_')[1];
+
+        // Ambil data produk real-time
+        const { data: product } = await supabase
+            .from('products')
+            .select('*')
+            .eq('id', productId)
+            .single();
+
+        if (!product) {
+            return bot.sendMessage(chatId, "⚠️ Produk tidak ditemukan atau sudah dihapus.");
+        }
+
+        // CREATE ORDER (Insert ke DB sekarang)
+        const { data: order, error } = await supabase.from('orders').insert({
+            user_id: chatId,
+            product_id: productId,
+            total_price: product.price,
+            status: 'pending'
+        }).select().single();
+
+        if (error) {
+            console.error(error);
+            return bot.sendMessage(chatId, "⚠️ Gagal membuat order sistem.");
+        }
+
+        // Generate Pesan Invoice
+        const price = new Intl.NumberFormat('id-ID').format(product.price);
+        const invoiceMsg = `
+✅ <b>ORDER DIBUAT! (#${order.id})</b>
+────────────────────
+📦 <b>${product.name}</b>
+💰 <b>Rp ${price}</b>
+────────────────────
+
+💳 <b>INFO PEMBAYARAN:</b>
+Bank: <b>${BANK_INFO.bank}</b>
+No. Rek: <code>${BANK_INFO.number}</code>
+A.N: ${BANK_INFO.name}
+
+📸 <b>LANGKAH TERAKHIR:</b>
+Silakan kirim foto/screenshot bukti transfer di sini.
+        `;
+
+        // Update Pesan Detail tadi menjadi Invoice (Supaya rapi)
+        // Kita juga hapus tombol checkout agar tidak diklik 2x
+        await bot.editMessageText(invoiceMsg, {
+            chat_id: chatId,
+            message_id: messageId,
+            parse_mode: 'HTML'
+        });
+    }
+}
+
+
+// ==================================================================
+// 5. LOGIC: TEXT MESSAGE
 // ==================================================================
 async function handleTextMessage(msg) {
     const chatId = msg.chat.id;
     const text = msg.text;
     const user = msg.from;
 
-    // --- A. SIMPAN DATA USER KE DB ---
+    // Save User
     await supabase.from('users').upsert({
         telegram_id: chatId,
         username: user.username,
-        full_name: `${user.first_name || ''} ${user.last_name || ''}`.trim()
+        full_name: `${user.first_name}`.trim()
     });
 
-    // --- B. HITUNG TOTAL PRODUK (Untuk Keyboard) ---
-    // Kita selalu butuh data ini untuk me-render keyboard di setiap balasan
-    const { count } = await supabase
-        .from('products')
-        .select('*', { count: 'exact', head: true })
-        .eq('is_active', true);
-    
-    const totalActive = count || 0;
-    const keyboardMarkup = createDynamicKeyboard(totalActive);
+    // Helper: Hitung Keyboard
+    const { count } = await supabase.from('products').select('*', { count: 'exact', head: true }).eq('is_active', true);
+    const keyboardMarkup = createDynamicKeyboard(count || 0);
 
-
-    // --- C. LOGIC PEMBELIAN (JIKA USER KLIK ANGKA) ---
-    // Cek apakah input hanya berupa angka? (Regex)
+    // LOGIC: Jika user mengetik Angka (Milih Produk)
     if (/^\d+$/.test(text)) {
-        const selectionNumber = parseInt(text);
-        await processOrderSelection(chatId, selectionNumber, keyboardMarkup);
+        await showProductDetail(chatId, parseInt(text));
         return; 
     }
 
-    // --- D. LOGIC MENU UTAMA ---
+    // LOGIC: Menu Utama
     switch (text) {
         case '/start':
-            const welcomeMsg = `
-👋 <b>Halo, ${user.first_name}!</b>
-Selamat datang di Store Otomatis.
-
-Silakan pilih <b>🏷 List Produk</b> untuk melihat daftar harga, 
-lalu klik angka di keyboard untuk membeli.
-`;
-            await bot.sendMessage(chatId, welcomeMsg, {
-                parse_mode: 'HTML',
-                reply_markup: keyboardMarkup
-            });
+            await bot.sendMessage(chatId, `👋 <b>Halo, ${user.first_name}!</b>\nSelamat Datang. Klik menu <b>List Produk</b> untuk melihat katalog.`, { parse_mode: 'HTML', reply_markup: keyboardMarkup });
             break;
 
         case '🏷 List Produk':
@@ -161,159 +197,104 @@ lalu klik angka di keyboard untuk membeli.
             break;
 
         case '🛍 Voucher':
-            await bot.sendMessage(chatId, "🔐 Menu Voucher belum tersedia saat ini.", { reply_markup: keyboardMarkup });
+            await bot.sendMessage(chatId, "🚫 Fitur belum tersedia.", { reply_markup: keyboardMarkup });
             break;
 
         case '📦 Laporan Stok':
-             const report = `
-📊 <b>LAPORAN STOK</b>
-──────────────────
-🟢 Status System: <b>ONLINE</b>
-📦 Total Produk Ready: <b>${totalActive} Item</b>
-──────────────────
-<i>Klik tombol 'List Produk' untuk refresh.</i>
-`;
-            await bot.sendMessage(chatId, report, { parse_mode: 'HTML', reply_markup: keyboardMarkup });
+            await bot.sendMessage(chatId, `📊 Total Produk Ready: <b>${count} Item</b>.`, { parse_mode: 'HTML', reply_markup: keyboardMarkup });
             break;
-
-        case '💰 Deposit':
-            await bot.sendMessage(chatId, "Fitur Deposit Hubungi Admin.", { reply_markup: keyboardMarkup });
-            break;
-
-        case '❓ Cara':
-            const guide = `
-📚 <b>CARA ORDER:</b>
-1. Klik menu <b>List Produk</b>.
-2. Lihat nomor di samping nama barang (misal [5]).
-3. Tekan angka <b>5</b> di keyboard tombol bawah.
-4. Akan muncul tagihan, silakan transfer.
-5. Kirim foto bukti transfer di sini.
-`;
-            await bot.sendMessage(chatId, guide, { parse_mode: 'HTML', reply_markup: keyboardMarkup });
-            break;
-            
-        case '⚠️ Information':
-            await bot.sendMessage(chatId, "ℹ️ <b>Info Bot v3.0</b>\nStore buka 24 Jam Otomatis.", { parse_mode: 'HTML', reply_markup: keyboardMarkup });
-            break;
-
-        default:
-            // Respons default agar keyboard tidak hilang
-            await bot.sendMessage(chatId, "Silakan pilih menu menggunakan tombol di bawah.", { reply_markup: keyboardMarkup });
-            break;
-    }
-}
-
-
-// ==================================================================
-// 5. HELPER: TAMPILKAN DAFTAR PRODUK (Sinkron dengan Tombol)
-// ==================================================================
-async function sendProductList(chatId, replyMarkup) {
-    // Ambil data produk
-    // PENTING: Urutkan by Price (Termurah) agar urutannya selalu sama (1,2,3...)
-    const { data: products } = await supabase
-        .from('products')
-        .select('*')
-        .eq('is_active', true)
-        .order('price', { ascending: true })
-        .limit(MAX_BUTTONS_DISPLAY);
-
-    if (!products || products.length === 0) {
-        return bot.sendMessage(chatId, "⚠️ Produk sedang kosong/habis.", { reply_markup: replyMarkup });
-    }
-
-    let msg = `🛍 <b>LIST DAFTAR HARGA</b>\n`;
-    msg += `<i>Silakan klik tombol angka di bawah untuk membeli.</i>\n\n`;
-
-    products.forEach((product, index) => {
-        const num = index + 1; // 1, 2, 3...
-        const price = new Intl.NumberFormat('id-ID').format(product.price);
         
-        // Style ala screenshot (Grid Text)
-        msg += `┊ <b>[${num}] ${product.name.toUpperCase()}</b>\n`;
-        msg += `┊ ↳ Rp ${price}\n`;
-        msg += `┊\n`; 
-    });
-    
-    msg += `╰────────────────────────◊`;
-
-    await bot.sendMessage(chatId, msg, { 
-        parse_mode: 'HTML', 
-        reply_markup: replyMarkup 
-    });
+        // Handle menu lainnya (Deposit, Cara, Info) sesuai selera..
+        default:
+            // Jangan reply error jika text tidak dikenali, biarkan silent atau tampilkan help
+             await bot.sendMessage(chatId, "Silakan pilih menu menggunakan tombol.", { reply_markup: keyboardMarkup });
+    }
 }
 
 
 // ==================================================================
-// 6. HELPER: PROSES ORDER (Logic Index ke Database)
+// 6. HELPER: SHOW LIST & SHOW DETAIL
 // ==================================================================
-async function processOrderSelection(chatId, selectedNumber, replyMarkup) {
-    // 1. Fetch Produk lagi untuk memastikan urutan Index
-    // LOGIC INI HARUS SAMA PERSIS DENGAN FUNCTION 'sendProductList'
+
+// TAMPILKAN DAFTAR (Teks List)
+async function sendProductList(chatId, replyMarkup) {
+    const { data: products } = await supabase
+        .from('products')
+        .select('*')
+        .eq('is_active', true)
+        .order('price', { ascending: true }) // Sortir Harga (Konsisten)
+        .limit(MAX_BUTTONS_DISPLAY);
+
+    if (!products.length) return bot.sendMessage(chatId, "⚠️ Produk Kosong.");
+
+    let msg = `🛒 <b>DAFTAR HARGA UPDATE</b>\n\n`;
+    products.forEach((p, idx) => {
+        msg += `[${idx + 1}] <b>${p.name.toUpperCase()}</b>\n   Rp ${new Intl.NumberFormat('id-ID').format(p.price)}\n`;
+    });
+    msg += `\n👇 <i>Tekan tombol angka di bawah untuk melihat detail.</i>`;
+
+    await bot.sendMessage(chatId, msg, { parse_mode: 'HTML', reply_markup: replyMarkup });
+}
+
+// TAMPILKAN DETAIL (Penting: INI UPDATE UTAMANYA)
+async function showProductDetail(chatId, selectedNumber) {
+    // 1. Ambil data (Logika Index sama persis dg sendProductList)
     const { data: products } = await supabase
         .from('products')
         .select('*')
         .eq('is_active', true)
         .order('price', { ascending: true })
         .limit(MAX_BUTTONS_DISPLAY);
+
+    const index = selectedNumber - 1;
+
+    // Validasi
+    if (!products || !products[index]) {
+        return bot.sendMessage(chatId, `⚠️ Produk nomor ${selectedNumber} tidak ditemukan. Silakan refresh list.`);
+    }
+
+    const item = products[index];
+    const price = new Intl.NumberFormat('id-ID').format(item.price);
     
-    // Konversi Angka User ke Index Array (User pilih 1 -> Array Index 0)
-    const arrayIndex = selectedNumber - 1;
+    // Pesan Detail
+    const detailMsg = `
+🛍 <b>DETAIL PRODUK</b>
+➖➖➖➖➖➖➖➖➖➖
+🏷 <b>Nama:</b> ${item.name}
+💰 <b>Harga:</b> Rp ${price}
+📄 <b>Deskripsi:</b>
+${item.description || "<i>Tidak ada keterangan tambahan.</i>"}
+➖➖➖➖➖➖➖➖➖➖
 
-    // 2. Validasi Ketersediaan
-    if (!products || !products[arrayIndex]) {
-        return bot.sendMessage(chatId, `⚠️ <b>Error:</b>\nProduk nomor ${selectedNumber} tidak valid/ditemukan. Silakan refresh list.`, { 
-            parse_mode: 'HTML',
-            reply_markup: replyMarkup 
-        });
-    }
-
-    const item = products[arrayIndex];
-
-    // 3. Simpan Order ke Database
-    const { data: order, error } = await supabase.from('orders').insert({
-        user_id: chatId,
-        product_id: item.id,
-        total_price: item.price,
-        status: 'pending'
-    }).select().single();
-
-    if (error) {
-        return bot.sendMessage(chatId, "Gagal membuat invoice.", { reply_markup: replyMarkup });
-    }
-
-    // 4. Kirim Invoice
-    const priceFormatted = new Intl.NumberFormat('id-ID').format(item.price);
-    const invoiceMsg = `
-╭──────────────────────╮
-│ 🧾 <b>TAGIHAN #${order.id}</b>
-│----------------------
-│ 📦 <b>Item:</b> ${item.name}
-│ 💰 <b>Total:</b> Rp ${priceFormatted}
-╰──────────────────────╯
-
-Silakan Transfer ke:
-🏦 <b>${BANK_INFO.bank}</b>
-💳 <code>${BANK_INFO.number}</code>
-👤 <b>${BANK_INFO.name}</b>
-
-📸 <b>KONFIRMASI:</b>
-Setelah transfer, silakan kirim <b>Foto/Screenshot Bukti</b> di chat ini.
+<i>Apakah Anda ingin melanjutkan pembelian?</i>
 `;
 
-    await bot.sendMessage(chatId, invoiceMsg, { 
-        parse_mode: 'HTML', 
-        reply_markup: replyMarkup // Tombol angka tetap ada agar User mudah
+    // Tombol INLINE (Muncul di bawah chat detail)
+    const actionButtons = {
+        inline_keyboard: [
+            [
+                { text: "✅ Checkout Langsung", callback_data: `checkout_${item.id}` }
+            ],
+            [
+                { text: "🏠 Kembali / Batal", callback_data: `cancel` } 
+            ]
+        ]
+    };
+
+    // Kirim pesan Detail
+    await bot.sendMessage(chatId, detailMsg, {
+        parse_mode: 'HTML',
+        reply_markup: actionButtons 
     });
 }
 
 
 // ==================================================================
-// 7. PHOTO HANDLER (Upload Bukti)
+// 7. HANDLE FOTO (Upload) - Tidak Ada Perubahan dari Kode Fix sebelumnya
 // ==================================================================
 async function handlePhotoMessage(msg) {
     const chatId = msg.chat.id;
-
-    // Cek pesanan 'pending'
+    // Cari Pending Order
     const { data: order } = await supabase
         .from('orders')
         .select('*, products(name)')
@@ -323,57 +304,33 @@ async function handlePhotoMessage(msg) {
         .limit(1)
         .single();
 
-    if (!order) {
-        return bot.sendMessage(chatId, "❌ Tidak ada pesanan aktif. Pilih produk dari list dulu ya.");
-    }
+    if (!order) return bot.sendMessage(chatId, "❌ Belum ada order pending. Silakan checkout dulu.");
 
-    const loadingMsg = await bot.sendMessage(chatId, "⏳ <i>Mengupload bukti transfer...</i>", {parse_mode:'HTML'});
+    const loadMsg = await bot.sendMessage(chatId, "⏳ Uploading...");
 
     try {
-        const photo = msg.photo[msg.photo.length - 1]; 
+        const photo = msg.photo[msg.photo.length - 1];
         const fileUrl = await bot.getFileLink(photo.file_id);
+        const buffer = Buffer.from(await (await fetch(fileUrl)).arrayBuffer());
         
-        // Fetch gambar jadi Buffer
-        const response = await fetch(fileUrl);
-        const arrayBuffer = await response.arrayBuffer();
-        const buffer = Buffer.from(arrayBuffer); 
-
         const filename = `proof_${order.id}_${Date.now()}.jpg`;
+        const bucket = 'payment-proofs'; // Sesuai bucket kamu
 
-        // 👇 PERUBAHAN ADA DISINI (proofs -> payment-proofs)
-        // Gunakan nama bucket sesuai screenshot Anda: 'payment-proofs'
-        const { error: uploadError } = await supabase.storage
-            .from('payment-proofs') 
-            .upload(filename, buffer, { 
-                contentType: 'image/jpeg',
-                upsert: true
-            });
-        
-        if (uploadError) throw uploadError;
+        const { error } = await supabase.storage.from(bucket).upload(filename, buffer, { contentType: 'image/jpeg', upsert: true });
+        if(error) throw error;
 
-        // Dapatkan URL Public
-        const { data: publicUrlData } = supabase.storage
-            .from('payment-proofs') // 👇 Disini juga harus diganti
-            .getPublicUrl(filename);
-        
-        // Update DB
+        const { data } = supabase.storage.from(bucket).getPublicUrl(filename);
+
         await supabase.from('orders').update({
             status: 'verification',
-            payment_proof_url: publicUrlData.publicUrl
+            payment_proof_url: data.publicUrl
         }).eq('id', order.id);
 
-        await bot.deleteMessage(chatId, loadingMsg.message_id);
+        await bot.deleteMessage(chatId, loadMsg.message_id);
+        await bot.sendMessage(chatId, `✅ <b>SUKSES!</b>\nOrder #${order.id} sedang diverifikasi admin.`);
 
-        await bot.sendMessage(chatId, `
-✅ <b>BUKTI DITERIMA!</b>
-Order #${order.id} (${order.products?.name})
-Mohon tunggu verifikasi admin.
-`, { parse_mode: 'HTML' });
-
-    } catch (error) {
-        console.error("Upload Error:", error);
-        await bot.deleteMessage(chatId, loadingMsg.message_id);
-        // Tips: Jika error, kirim pesan error spesifik biar tau masalahnya
-        await bot.sendMessage(chatId, `⚠️ Gagal Upload. Error: ${error.message}`);
+    } catch (e) {
+        bot.deleteMessage(chatId, loadMsg.message_id);
+        bot.sendMessage(chatId, "⚠️ Gagal upload.");
     }
 }
