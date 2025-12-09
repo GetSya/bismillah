@@ -314,56 +314,52 @@ async function sendProductList(chatId, kb) {
       .from('products')
       .select('*')
       .eq('is_active', true)
-      .order('id', { ascending: true }) 
+      .order('id', { ascending: true }) // Pastikan urut ID
       .limit(MAX_BUTTONS_DISPLAY);
 
   if (!products || products.length === 0) {
-      return bot.sendMessage(chatId, "⚠️ Produk masih kosong.", { reply_markup: kb });
+      return bot.sendMessage(chatId, "⚠️ Produk Kosong.", { reply_markup: kb });
   }
 
-  let message = `🛒 <b>DAFTAR HARGA UPDATE</b>\n\n`;
+  let message = `🛒 <b>DAFTAR HARGA UPDATE</b>\n`;
+  message += `<i>Klik nomor tombol sesuai produk.</i>\n\n`;
 
   products.forEach((p, idx) => {
       const num = idx + 1;
       
-      // 1. Cek Apakah Produk punya Varian (Parsing JSON Aman)
+      // Cek Varian (Safe Parse)
       let variants = [];
-      try {
-          if (p.variants) {
-              // Parse jika string, gunakan langsung jika sudah object (Supabase kadang otomatis)
-              variants = typeof p.variants === 'string' ? JSON.parse(p.variants) : p.variants;
-          }
-      } catch (e) { variants = []; }
-
+      try { if(p.variants) variants = typeof p.variants === 'string' ? JSON.parse(p.variants) : p.variants; } catch(e){}
       const hasVariants = Array.isArray(variants) && variants.length > 0;
 
-      // 2. Tentukan Teks Harga dan Unit
-      let displayPriceStr = "";
+      // FORMAT DISPLAY HARGA:
+      // Jika Normal: "Rp 10.000 / akun"
+      // Jika Varian: "Mulai Rp 10.000 (Ada opsi lain)"
+      // TAPI: User meminta agar harga asli TAMPIL. 
+      // Jadi logicnya: Priority Harga asli dulu.
       
+      const price = formatRupiah(p.price);
+      const unitLabel = p.unit ? ` / ${p.unit}` : ''; 
+      let priceText = `Rp ${price}${unitLabel}`; // Format Default (Asli/Tabel)
+
       if (hasVariants) {
-          // -- LOGIC VARIAN -- "Mulai Rp 10.000"
           const minPrice = Math.min(...variants.map(v => v.price));
-          displayPriceStr = `Mulai Rp ${formatRupiah(minPrice)}`;
-      } else {
-          // -- LOGIC PRODUK BIAS -- "Rp 10.000 / pcs"
-          const price = p.price ? formatRupiah(p.price) : '0';
-          const unit = p.unit ? ` / ${p.unit}` : ''; // Unit muncul di sini
-          displayPriceStr = `Rp ${price}${unit}`;
+          // Tambahkan hint jika ada varian
+          priceText += `\n   ↳ <i>Mulai: Rp ${formatRupiah(minPrice)}</i>`;
       }
 
-      // 3. Susun Baris
-      message += `<b>${num}. ${p.name.toUpperCase()}</b>\n`;
-      message += `   └ ${displayPriceStr}\n\n`;
+      message += `[${num}] <b>${p.name.toUpperCase()}</b>\n`;
+      message += `   💰 ${priceText}\n\n`;
   });
-
-  message += `<i>Ketik/klik angka nomor item untuk order bisa via varian atau satuan.</i>`;
 
   await bot.sendMessage(chatId, message, { parse_mode: 'HTML', reply_markup: kb });
 }
+
 // ===================================
 // UPDATE FUNCTION (DETAIL LINK)
 // ===================================
 async function showProductDetail(chatId, selectedNumber, kb) {
+  // Logic fetch sama persis dengan List agar index sinkron
   const { data: products } = await supabase
       .from('products')
       .select('*')
@@ -374,60 +370,68 @@ async function showProductDetail(chatId, selectedNumber, kb) {
   const index = selectedNumber - 1;
 
   if (!products || !products[index]) {
-      return bot.sendMessage(chatId, `⚠️ Produk nomor ${selectedNumber} tidak ditemukan.`, { reply_markup: kb });
+      return bot.sendMessage(chatId, `⚠️ Produk nomor ${selectedNumber} tidak valid. Refresh List.`, { reply_markup: kb });
   }
 
   const item = products[index];
 
-  // Cek Varian
-  let variants = [];
-  try {
-      if (item.variants) {
-          variants = typeof item.variants === 'string' ? JSON.parse(item.variants) : item.variants;
-      }
-  } catch (e) { variants = []; }
+  // 1. Ambil Harga & Unit "ASLI" (Dari tabel Products)
+  // Tampilkan ini apapun kondisinya (Normal / Varian)
+  const basePrice = formatRupiah(item.price);
+  const baseUnit = item.unit ? ` / ${item.unit}` : ''; 
+  const fullPriceLabel = `Rp ${basePrice}${baseUnit}`;
 
-  const hasVariants = Array.isArray(variants) && variants.length > 0;
-
+  // 2. Siapkan Detail Text Dasar
   let detailText = `
 🛍 <b>DETAIL PRODUK</b>
 ➖➖➖➖➖➖➖➖➖➖➖
 📦 <b>${item.name.toUpperCase()}</b>
-📄 ${item.description || '-'}
+💰 <b>ASLI:</b> ${fullPriceLabel}
 ➖➖➖➖➖➖➖➖➖➖➖
+📝 <b>Deskripsi:</b>
+${item.description || "Tidak ada deskripsi tambahan."}
 `;
+
+  // 3. Cek Varian
+  let variants = [];
+  try { if(item.variants) variants = typeof item.variants === 'string' ? JSON.parse(item.variants) : item.variants; } catch(e){}
+  const hasVariants = Array.isArray(variants) && variants.length > 0;
 
   let inlineKeyboard = [];
 
-  // --- KONDISI A: APAKAH PUNYA VARIAN? ---
+  // --- KONDISI A: ADA VARIAN ---
   if (hasVariants) {
-      detailText += `\n👇 <b>Pilih Opsi Paket :</b>`;
+      detailText += `\n\n👇 <b>SILAKAN PILIH PAKET UTAMA:</b>`;
       
       // Loop tombol varian
       variants.forEach((v, idx) => {
-          const vName = v.name || 'Varian';
-          const vPrice = v.price || 0;
+          const vName = v.name || 'Paket';
+          const vPrice = v.price ? formatRupiah(v.price) : '0';
           inlineKeyboard.push([
               { 
-                  text: `🔹 ${vName} - Rp ${formatRupiah(vPrice)}`, 
+                  text: `🔹 ${vName} - Rp ${vPrice}`, 
                   callback_data: `vcheckout_${item.id}_${idx}`
               }
           ]);
       });
   } 
-  // --- KONDISI B: PRODUK BIASA (NORMAL) ---
+  // --- KONDISI B: PENGGUNAAN NORMAL / SINGLE ---
   else {
-      // Tampilkan Harga Normal & Unit
-      const normalPrice = item.price ? formatRupiah(item.price) : '0';
-      const unitLabel = item.unit ? ` / ${item.unit}` : ''; 
+      detailText += `\n\n👇 <i>Tekan tombol di bawah untuk proses beli:</i>`;
       
-      detailText += `\n💰 <b>HARGA:</b> Rp ${normalPrice}${unitLabel}`;
-      detailText += `\n\n👇 <i>Tekan tombol di bawah untuk beli:</i>`;
-
       inlineKeyboard.push([
-          { text: "✅ Beli Langsung", callback_data: `checkout_${item.id}` }
+          { text: `✅ Beli (${fullPriceLabel})`, callback_data: `checkout_${item.id}` }
       ]);
   }
+
+  // Tombol Batal Selalu Muncul
+  inlineKeyboard.push([ { text: "✖️ Tutup / Batal", callback_data: `cancel` } ]);
+
+  await bot.sendMessage(chatId, detailText, {
+      parse_mode: 'HTML',
+      reply_markup: { inline_keyboard: inlineKeyboard }
+  });
+}
 
   // Tombol Batal
   inlineKeyboard.push([ { text: "✖️ Batal", callback_data: `cancel` } ]);
@@ -436,7 +440,6 @@ async function showProductDetail(chatId, selectedNumber, kb) {
       parse_mode: 'HTML',
       reply_markup: { inline_keyboard: inlineKeyboard }
   });
-}
 
 
 // ==================================================================
