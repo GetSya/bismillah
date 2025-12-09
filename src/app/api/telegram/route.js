@@ -23,20 +23,20 @@ const BUTTONS_PER_ROW = 6;       // 6 Angka per baris agar rapi
 const formatRupiah = (num) => new Intl.NumberFormat('id-ID').format(num);
 
 // ==================================================================
-// 2. HELPER: MEMBUAT KEYBOARD DINAMIS (JANGAN DIHAPUS)
+// 2. HELPER: MEMBUAT KEYBOARD DINAMIS
 // ==================================================================
 function createDynamicKeyboard(totalItems) {
-    // A. Baris Menu Atas (Fixed)
+    // A. Baris Menu Atas
     const topMenu = [
         { text: "🏷 List Produk" }, { text: "🛍 Voucher" }, { text: "📦 Laporan Stok" }
     ];
 
-    // B. Baris Menu Bawah (Fixed)
+    // B. Baris Menu Bawah
     const bottomMenu = [
         { text: "💰 Deposit" }, { text: "❓ Cara" }, { text: "⚠️ Information" }
     ];
 
-    // C. Baris Angka (Logic: Loop sesuai jumlah stok)
+    // C. Baris Angka
     const numberGrid = [];
     const count = Math.min(totalItems, MAX_BUTTONS_DISPLAY);
 
@@ -44,25 +44,18 @@ function createDynamicKeyboard(totalItems) {
         let tempRow = [];
         for (let i = 1; i <= count; i++) {
             tempRow.push({ text: `${i}` });
-
-            // Jika sudah mencapai batas kolom per baris, dorong ke grid
             if (tempRow.length === BUTTONS_PER_ROW) {
                 numberGrid.push(tempRow);
                 tempRow = [];
             }
         }
-        // Masukkan sisa tombol yang belum genap 1 baris
         if (tempRow.length > 0) {
             numberGrid.push(tempRow);
         }
     }
 
     return {
-        keyboard: [
-            topMenu,
-            ...numberGrid, // Masukkan grid angka di tengah
-            bottomMenu
-        ],
+        keyboard: [ topMenu, ...numberGrid, bottomMenu ],
         resize_keyboard: true,
         is_persistent: true,
         input_field_placeholder: "Pilih menu atau nomor produk..."
@@ -71,7 +64,7 @@ function createDynamicKeyboard(totalItems) {
 
 
 // ==================================================================
-// 3. MAIN ROUTE HANDLER (WEBHOOK ENTRI POINT)
+// 3. MAIN ROUTE HANDLER
 // ==================================================================
 export async function POST(req) {
     if (!bot) return NextResponse.json({ error: 'Bot inactive' });
@@ -79,22 +72,22 @@ export async function POST(req) {
     try {
         const body = await req.json();
 
-        // 1. Callback Query (Saat user klik tombol Inline: Checkout / Cancel / Varian)
+        // 1. Callback Query (Klik tombol Varian/Checkout/Cancel)
         if (body.callback_query) {
             await handleCallbackQuery(body.callback_query);
         }
-        // 2. Message Text (Saat user mengetik Menu / Angka Tombol)
+        // 2. Message Text (Menu / Angka)
         else if (body.message?.text) {
             await handleTextMessage(body.message);
         }
-        // 3. Message Photo (Saat user kirim Bukti Transfer)
+        // 3. Message Photo (Bukti Transfer)
         else if (body.message?.photo) {
             await handlePhotoMessage(body.message);
         }
 
         return NextResponse.json({ status: 'ok' });
     } catch (error) {
-        console.error('SERVER ERROR:', error);
+        console.error('SERVER ERROR MAIN:', error);
         return NextResponse.json({ error: error.message });
     }
 }
@@ -117,15 +110,9 @@ async function handleCallbackQuery(query) {
         return;
     }
 
-    /* -----------------------------------------------------------
-       LOGIC CHECKOUT
-       Ada 2 jenis callback data:
-       1. 'checkout_{id}'          -> Checkout Produk Normal
-       2. 'vcheckout_{id}_{index}' -> Checkout Produk Varian
-    ----------------------------------------------------------- */
-    
+    /* Logic Checkout: Normal & Varian */
     let productId = null;
-    let variantIndex = -1; // -1 artinya produk normal tanpa varian
+    let variantIndex = -1; // -1 = produk normal
 
     if (data.startsWith('checkout_')) {
         productId = data.split('_')[1];
@@ -134,7 +121,7 @@ async function handleCallbackQuery(query) {
         productId = parts[1];
         variantIndex = parseInt(parts[2]);
     } else {
-        return; // Unknown callback
+        return; 
     }
 
     // 1. Ambil Data Produk
@@ -145,47 +132,46 @@ async function handleCallbackQuery(query) {
         .single();
 
     if (!product) {
-        return bot.sendMessage(chatId, "⚠️ Error: Produk data tidak ditemukan.");
+        return bot.sendMessage(chatId, "⚠️ Error: Produk tidak ditemukan di database.");
     }
 
-    // 2. Tentukan Harga & Nama Item berdasarkan Pilihan (Normal vs Varian)
+    // 2. Tentukan Harga & Variant
     let finalPrice = product.price;
-    let finalVariantName = null;     // null jika produk normal
-    let displayName = product.name;  // Untuk tampilan di Invoice
+    let finalVariantName = null;     
+    let displayName = product.name;  
 
+    // Jika user memilih varian
     if (variantIndex > -1) {
-        // --- LOGIC VARIAN ---
-        // Parse JSON dari database (jika string, parse dulu. Jika sudah object biarkan)
         const variants = (typeof product.variants === 'string') 
             ? JSON.parse(product.variants) 
             : product.variants;
 
         if (variants && variants[variantIndex]) {
             const selected = variants[variantIndex];
-            finalPrice = selected.price;            // Ambil harga varian
-            finalVariantName = selected.name;       // Simpan nama varian (cth: "1 Bulan")
-            displayName = `${product.name} (${selected.name})`; // Update nama display
+            finalPrice = selected.price;            
+            finalVariantName = selected.name;       
+            displayName = `${product.name} - ${selected.name}`; 
         } else {
             return bot.sendMessage(chatId, "⚠️ Gagal memuat data varian.");
         }
     }
 
-    // 3. Masukkan ke Database Orders
+    // 3. Create Order
+    // Perbaikan: Hapus await...catch di sini jika ada, gunakan { data, error }
     const { data: order, error } = await supabase.from('orders').insert({
         user_id: chatId,
         product_id: productId,
-        total_price: finalPrice,         // Harga sesuai varian atau normal
-        variant_name: finalVariantName,  // <--- KOLOM BARU ANDA
+        total_price: finalPrice,         
+        variant_name: finalVariantName,  
         status: 'pending' 
     }).select().single();
 
     if (error) {
-        console.error("DB Error", error);
+        console.error("DB Create Order Error", error);
         return bot.sendMessage(chatId, "❌ Gagal membuat invoice. Server Database sibuk.");
     }
 
-    // 4. Ubah Pesan Detail Menjadi Invoice
-    // Tampilan Invoice
+    // 4. Kirim Invoice
     const unitDisplay = (product.unit && !finalVariantName) ? ` / ${product.unit}` : ''; 
     const priceFormatted = formatRupiah(finalPrice);
 
@@ -194,7 +180,7 @@ async function handleCallbackQuery(query) {
 ────────────────────
 📦 <b>Item:</b> ${product.name.toUpperCase()}
 🔖 <b>Varian:</b> ${finalVariantName || '-'}
-💰 <b>Total:</b> Rp ${priceFormatted}${unitDisplay}
+💰 <b>Total Invoice:</b> Rp ${priceFormatted}${unitDisplay}
 ────────────────────
 
 🏦 <b>REKENING PEMBAYARAN:</b>
@@ -207,7 +193,7 @@ Status pesanan: <b>🟡 PENDING</b>.
 Mohon segera <b>kirim FOTO BUKTI TRANSFER</b> sekarang juga di chat ini.
 `;
 
-    // Edit pesan yang ada
+    // Edit pesan
     await bot.editMessageText(invoiceMsg, {
         chat_id: chatId,
         message_id: messageId,
@@ -217,23 +203,30 @@ Mohon segera <b>kirim FOTO BUKTI TRANSFER</b> sekarang juga di chat ini.
 
 
 // ==================================================================
-// 5. LOGIC: TEXT MESSAGE (NAVIGASI UTAMA & ANGKA)
+// 5. LOGIC: TEXT MESSAGE (NAVIGASI & UPSERT USER FIX)
 // ==================================================================
 async function handleTextMessage(msg) {
     const chatId = msg.chat.id;
     const text = msg.text;
     const user = msg.from;
-
     const full_name = `${user.first_name || ''} ${user.last_name || ''}`.trim();
 
-    // A. Simpan user (Agar admin punya database user)
-    await supabase.from('users').upsert({
+    /* 
+       FIX: Menghilangkan .catch() pada syntax Supabase.
+       Gunakan destructuring { error } untuk menangkap error.
+    */
+    const { error: upsertError } = await supabase.from('users').upsert({
         telegram_id: chatId,
         username: user.username,
         full_name: full_name
-    }).catch(err => console.log('Upsert user err', err));
+    });
 
-    // B. Hitung Stok (Agar tombol keyboard sesuai jumlah produk aktif)
+    if (upsertError) {
+        // Cukup log di console server, jangan diproses lebih lanjut agar bot tetap jalan
+        console.error('Upsert user failed:', upsertError); 
+    }
+
+    // Hitung Stok untuk Keyboard
     const { count } = await supabase
         .from('products')
         .select('*', { count: 'exact', head: true })
@@ -243,7 +236,7 @@ async function handleTextMessage(msg) {
     const dynamicKeyboard = createDynamicKeyboard(totalActive);
 
     // C. Jika Text Adalah ANGKA (1, 2, 3...)
-    if (/^\d+$/.test(text) && text.length < 4) { // Validasi angka simpel
+    if (/^\d+$/.test(text) && text.length < 4) { 
         await showProductDetail(chatId, parseInt(text), dynamicKeyboard);
         return; 
     }
@@ -253,9 +246,9 @@ async function handleTextMessage(msg) {
         case '/start':
             await bot.sendPhoto(
                 chatId,
-                "https://files.catbox.moe/22832e.jpg", // GANTI LOGO ANDA
+                "https://files.catbox.moe/22832e.jpg", // GANTI SESUAI GAMBAR ANDA
                 {
-                    caption: `👋 <b>Halo, ${user.first_name}!</b>\nSelamat datang di Store Bot.\n\nSilakan tekan menu <b>List Produk</b> atau ketik nomor produk.`,
+                    caption: `👋 <b>Halo, ${user.first_name}!</b>\nSelamat datang di Store Bot.\n\nSilakan pilih menu <b>List Produk</b> di bawah.`,
                     parse_mode: 'HTML',
                     reply_markup: dynamicKeyboard
                 }
@@ -266,110 +259,99 @@ async function handleTextMessage(msg) {
             await sendProductList(chatId, dynamicKeyboard);
             break;
 
-        case '🛍 Voucher': // Custom Menu 
-            await bot.sendMessage(chatId, "🔐 Belum ada voucher tersedia hari ini.", { reply_markup: dynamicKeyboard });
+        case '🛍 Voucher':
+            await bot.sendMessage(chatId, "🔐 Voucher belum tersedia.", { reply_markup: dynamicKeyboard });
             break;
 
         case '📦 Laporan Stok':
-            await bot.sendMessage(chatId, `📊 <b>Info Stok</b>\n\nProduk Terdaftar: <b>${totalActive} Item</b>\n\n<i>Server Time: ${new Date().toLocaleTimeString('id-ID')}</i>`, { parse_mode: 'HTML', reply_markup: dynamicKeyboard });
+            await bot.sendMessage(chatId, `📊 <b>Info Stok</b>\n\nProduk Aktif: <b>${totalActive} Item</b>`, { parse_mode: 'HTML', reply_markup: dynamicKeyboard });
             break;
 
         case '💰 Deposit':
-            await bot.sendMessage(chatId, "Fitur Deposit belum aktif. Silakan bayar langsung via transfer.", { reply_markup: dynamicKeyboard });
+            await bot.sendMessage(chatId, "Hubungi admin untuk deposit.", { reply_markup: dynamicKeyboard });
             break;
 
         case '❓ Cara':
             const tutorial = `
-📚 <b>CARA ORDER:</b>
+📚 <b>CARA BELI:</b>
 1. Klik menu <b>List Produk</b>.
-2. Lihat nomor pada produk (cth: [5]).
-3. Klik angka <b>5</b> di keyboard tombol.
-4. Pilih Varian / Checkout Langsung.
-5. Transfer & kirim foto bukti.
-`;
+2. Ingat nomor produk yang diinginkan (cth: 1).
+3. Klik angka <b>1</b> di tombol keyboard.
+4. Pilih Varian & Transfer.
+            `;
             await bot.sendMessage(chatId, tutorial, { parse_mode: 'HTML', reply_markup: dynamicKeyboard });
             break;
 
         case '⚠️ Information':
-            await bot.sendMessage(chatId, "Bot Version 3.0 (Variants Supported) - Running.", { reply_markup: dynamicKeyboard });
+            await bot.sendMessage(chatId, "Bot Status: Online.", { reply_markup: dynamicKeyboard });
             break;
 
         default:
-            await bot.sendMessage(chatId, "Silakan pilih menu dari tombol di bawah.", { reply_markup: dynamicKeyboard });
+            await bot.sendMessage(chatId, "Silakan pilih menu.", { reply_markup: dynamicKeyboard });
             break;
     }
 }
 
 
 // ==================================================================
-// 6. HELPER FUNCTIONS: MENAMPILKAN PRODUK (VARIAN SUPPORTED)
+// 6. HELPER FUNCTIONS: DISPLAY PRODUK & VARIAN
 // ==================================================================
-
-// Function 6A: LIST DENGAN HARGA "MULAI DARI"
 async function sendProductList(chatId, kb) {
-    // Ambil data produk
     const { data: products } = await supabase
         .from('products')
         .select('*')
         .eq('is_active', true)
-        .order('price', { ascending: true }) // Atau order by id
+        .order('id', { ascending: true }) // Disamakan dengan detail (urut ID) atau price
         .limit(MAX_BUTTONS_DISPLAY);
 
     if (!products || products.length === 0) {
-        return bot.sendMessage(chatId, "⚠️ Belum ada produk aktif.", { reply_markup: kb });
+        return bot.sendMessage(chatId, "⚠️ Produk masih kosong.", { reply_markup: kb });
     }
 
-    let message = `🛒 <b>DAFTAR HARGA UPDATE</b>\n\n`;
+    let message = `🛒 <b>LIST PRODUK TERSEDIA</b>\n\n`;
 
     products.forEach((p, idx) => {
         const num = idx + 1;
-        
-        // Cek apakah punya Varian?
+        // Parse Varian
         const variants = (typeof p.variants === 'string') ? JSON.parse(p.variants) : p.variants;
         const hasVariants = Array.isArray(variants) && variants.length > 0;
 
         let priceText = "";
-        
         if (hasVariants) {
-            // Jika ada varian, tampilkan harga termurah
             const minPrice = Math.min(...variants.map(v => v.price));
             priceText = `Mulai Rp ${formatRupiah(minPrice)}`;
         } else {
-            // Harga normal
             const unit = p.unit ? `/${p.unit}` : '';
             priceText = `Rp ${formatRupiah(p.price)}${unit}`;
         }
 
-        message += `<b>${num}. ${p.name.toUpperCase()}</b>\n`;
-        message += `   └ ${priceText}\n\n`;
+        message += `<b>[${num}] ${p.name.toUpperCase()}</b>\n`;
+        message += `   └ ${priceText}\n`;
     });
-
-    message += `<i>Ketik/klik angka nomor item untuk detail.</i>`;
+    
+    message += `\n<i>👇 Klik tombol angka di bawah untuk melihat detail varian/beli.</i>`;
 
     await bot.sendMessage(chatId, message, { parse_mode: 'HTML', reply_markup: kb });
 }
 
-// Function 6B: DETAIL PRODUK (POPUP VARIAN / CHECKOUT BIASA)
 async function showProductDetail(chatId, selectedNumber, kb) {
-    // 1. Ambil data stok (limit dan order harus SAMA PERSIS dengan sendProductList agar nomornya sinkron)
+    // 1. Logic urutan list product harus sama persis dengan fungsi sendProductList
     const { data: products } = await supabase
         .from('products')
         .select('*')
         .eq('is_active', true)
-        .order('price', { ascending: true }) // HARUS KONSISTEN SORTINGNYA
+        .order('id', { ascending: true }) 
         .limit(MAX_BUTTONS_DISPLAY);
     
-    // 2. Tentukan Index (Nomor 1 adalah index 0)
     const index = selectedNumber - 1;
 
-    // 3. Validasi
     if (!products || !products[index]) {
-        return bot.sendMessage(chatId, `⚠️ Nomor ${selectedNumber} kosong/tidak ditemukan.`, { reply_markup: kb });
+        return bot.sendMessage(chatId, `⚠️ Produk nomor ${selectedNumber} tidak ditemukan.`, { reply_markup: kb });
     }
 
     const item = products[index];
 
-    // 4. Cek Varian (JSON Parsing)
+    // Cek Varian
     let variants = [];
     if (item.variants) {
         try {
@@ -377,48 +359,43 @@ async function showProductDetail(chatId, selectedNumber, kb) {
         } catch (e) { variants = []; }
     }
 
-    // 5. Susun Pesan
     let detailText = `
-🛍 <b>DETAIL PESANAN</b>
-─────────────────
-🏷 <b>${item.name.toUpperCase()}</b>
-📄 ${item.description || '-'}
-─────────────────
+🛍 <b>DETAIL LINK / PRODUK</b>
+➖➖➖➖➖➖➖➖➖➖➖
+<b>${item.name.toUpperCase()}</b>
+${item.description || ''}
+➖➖➖➖➖➖➖➖➖➖➖
 `;
 
-    // 6. Susun Tombol Inline (DINAMIS)
     let inlineKeyboard = [];
 
-    // KONDISI A: APAKAH PUNYA VARIAN?
+    // Jika ada Varian, Tampilkan List Tombol Varian
     if (Array.isArray(variants) && variants.length > 0) {
-        detailText += `\n👇 <b>PILIH PAKET / DURASI:</b>`;
+        detailText += `👇 <b>Silakan Pilih Paket:</b>`;
         
-        // Loop Varian (Data JSON: name, price)
         variants.forEach((v, idx) => {
             inlineKeyboard.push([
                 { 
-                    text: `🔹 ${v.name} - Rp ${formatRupiah(v.price)}`, 
-                    callback_data: `vcheckout_${item.id}_${idx}` // Format Baru: vcheckout
+                    text: `🗓 ${v.name} - Rp ${formatRupiah(v.price)}`, 
+                    callback_data: `vcheckout_${item.id}_${idx}`
                 }
             ]);
         });
 
     } 
-    // KONDISI B: PRODUK BIASA (TANPA VARIAN)
+    // Jika tidak ada varian, tombol checkout biasa
     else {
-        const unitLabel = item.unit ? ` / ${item.unit}` : '';
-        detailText += `\n💰 <b>HARGA:</b> Rp ${formatRupiah(item.price)}${unitLabel}`;
-        detailText += `\n👇 <i>Klik checkout untuk melanjutkan</i>`;
+        detailText += `💰 <b>Harga:</b> Rp ${formatRupiah(item.price)}\n`;
+        detailText += `👇 <i>Lanjutkan ke pembayaran?</i>`;
 
         inlineKeyboard.push([
-            { text: "✅ Checkout Sekarang", callback_data: `checkout_${item.id}` }
+            { text: "✅ Beli Sekarang", callback_data: `checkout_${item.id}` }
         ]);
     }
 
-    // Tombol Batal selalu ada di bawah agar rapi
-    inlineKeyboard.push([ { text: "✖️ Batal / Tutup", callback_data: `cancel` } ]);
+    // Tombol Batal
+    inlineKeyboard.push([ { text: "✖️ Tutup", callback_data: `cancel` } ]);
 
-    // 7. Kirim Pesan dengan Tombol
     await bot.sendMessage(chatId, detailText, {
         parse_mode: 'HTML',
         reply_markup: { inline_keyboard: inlineKeyboard }
@@ -427,12 +404,13 @@ async function showProductDetail(chatId, selectedNumber, kb) {
 
 
 // ==================================================================
-// 7. PHOTO HANDLER: VERIFIKASI PEMBAYARAN (UPLOAD KE CATBOX)
+// 7. PHOTO HANDLER: UPLOAD KE CATBOX 
 // ==================================================================
 async function handlePhotoMessage(msg) {
     const chatId = msg.chat.id;
 
-    // 1. Ambil Order Pending Terbaru user ini yang belum bayar
+    // Ambil order "Pending" terakhir
+    // Perhatikan: status 'pending' (Case sensitive sesuai database anda)
     const { data: order } = await supabase
         .from('orders')
         .select('*, products(name)')
@@ -443,66 +421,60 @@ async function handlePhotoMessage(msg) {
         .single();
 
     if (!order) {
-        // Jangan respon text panjang, user mungkin cuma share foto biasa ke bot
-        return bot.sendMessage(chatId, "⚠️ Tak ada tagihan pending. Silakan checkout dulu.");
+        return bot.sendMessage(chatId, "⚠️ <b>Tidak ada tagihan pending!</b>\nSilakan order/checkout produk dulu sebelum kirim bukti transfer.", {parse_mode:'HTML'});
     }
 
-    const sentInvoMsg = await bot.sendMessage(chatId, "⏳ <i>Mengupload bukti ke Server...</i>", {parse_mode:'HTML'});
+    const loadingMsg = await bot.sendMessage(chatId, "⏳ <i>Mengupload bukti...</i>", {parse_mode:'HTML'});
 
     try {
-        // 2. Ambil File dari Telegram
-        const photo = msg.photo[msg.photo.length - 1]; // Resolusi paling besar
+        const photo = msg.photo[msg.photo.length - 1]; 
         const telegramFileLink = await bot.getFileLink(photo.file_id);
         
-        // 3. Ubah jadi Blob
         const response = await fetch(telegramFileLink);
         const arrayBuffer = await response.arrayBuffer();
         const imageBlob = new Blob([arrayBuffer], { type: 'image/jpeg' });
 
-        // 4. Siapkan Upload Catbox
         const formData = new FormData();
         formData.append('reqtype', 'fileupload');
-        formData.append('fileToUpload', imageBlob, `trx_${order.id}_${Date.now()}.jpg`);
+        formData.append('fileToUpload', imageBlob, `struk_${order.id}.jpg`);
 
-        // 5. POST Upload
         const catboxReq = await fetch('https://catbox.moe/user/api.php', {
             method: 'POST',
             body: formData
         });
 
-        if (!catboxReq.ok) throw new Error("Connection failed");
-        
-        const catboxUrl = await catboxReq.text(); // URL Gambar hasilnya
-        
-        // Catbox error check
-        if (!catboxUrl.startsWith("http")) throw new Error("Catbox error: " + catboxUrl);
+        if (!catboxReq.ok) throw new Error("Catbox server error");
+        const catboxUrl = await catboxReq.text(); 
+        if (!catboxUrl.startsWith("http")) throw new Error("Gagal upload gambar");
 
-        // 6. UPDATE DB ORDERS
-        await supabase.from('orders').update({
+        // Update DB
+        const { error: errorUpdate } = await supabase.from('orders').update({
             status: 'verification',
             payment_proof_url: catboxUrl
         }).eq('id', order.id);
 
-        await bot.deleteMessage(chatId, sentInvoMsg.message_id);
+        if(errorUpdate) throw errorUpdate;
 
-        // 7. Info Variant di Pesan Sukses
-        const varianInfo = order.variant_name ? `(${order.variant_name})` : '';
+        await bot.deleteMessage(chatId, loadingMsg.message_id);
+
+        // Info
+        const vInfo = order.variant_name ? `(${order.variant_name})` : '';
 
         const successText = `
 ✅ <b>BUKTI DITERIMA!</b>
 ──────────────
 <b>Order ID:</b> #${order.id}
-<b>Item:</b> ${order.products.name} ${varianInfo}
+<b>Produk:</b> ${order.products?.name} ${vInfo}
 <b>Status:</b> 🔵 VERIFICATION
 
-Mohon tunggu admin memverifikasi pembayaran Anda.
-Produk akan dikirim otomatis ke chat ini.
+Mohon tunggu admin memverifikasi. 
+Produk akan dikirim otomatis ke sini setelah status 'completed'.
 `;
         await bot.sendMessage(chatId, successText, { parse_mode: 'HTML' });
 
     } catch (e) {
         console.error("Upload Error:", e);
-        await bot.deleteMessage(chatId, sentInvoMsg.message_id);
-        await bot.sendMessage(chatId, "❌ Gagal upload bukti koneksi error. Coba kirim gambarnya lagi.");
+        await bot.deleteMessage(chatId, loadingMsg.message_id);
+        await bot.sendMessage(chatId, "⚠️ Gagal upload. Mohon kirim ulang fotonya.");
     }
 }
