@@ -206,11 +206,17 @@ async function handleTextMessage(msg) {
     // D. Router Menu
     switch (text) {
         case '/start':
-            await bot.sendMessage(chatId, `👋 <b>Halo, ${user.first_name}!</b>\nSelamat datang di Store Bot.\nSilakan tekan menu <b>List Produk</b> di bawah untuk mulai.`, { 
-                parse_mode: 'HTML', 
-                reply_markup: dynamicKeyboard 
-            });
-            break;
+    await bot.sendPhoto(
+        chatId,
+        "https://files.catbox.moe/22832e.jpg", // LOGO XIAMO STORE
+        {
+            caption: `👋 <b>Halo, ${user.first_name}!</b>\nSelamat datang di <b>Xiaomi Store Bot</b>.\n\nSilakan tekan menu <b>List Produk</b> untuk mulai.`,
+            parse_mode: 'HTML',
+            reply_markup: dynamicKeyboard
+        }
+    );
+    break;
+
 
         case '🏷 List Produk':
             await sendProductList(chatId, dynamicKeyboard);
