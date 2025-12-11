@@ -5,18 +5,15 @@ import { createClient } from '@supabase/supabase-js';
 // ==================================================================
 // 1. CONFIGURATION
 // ==================================================================
-// ==================================================================
-// 1. CONFIGURATION
-// ==================================================================
-// Hapus tanda ! di akhir process.env...
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URLKU;
+// Hapus tanda seru (!) dan tipe data
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URLKU; 
 const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEYKU;
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const bot = token ? new TelegramBot(token, { polling: false }) : null;
 
-// ID ADMIN TETAP (@sofunsyabi)
+// ID ADMIN TETAP
 const ADMIN_ID = '662362624'; 
 
 const BANK_INFO = {
@@ -28,13 +25,13 @@ const BANK_INFO = {
 const MAX_BUTTONS_DISPLAY = 50;
 const BUTTONS_PER_ROW = 6;
 
-// Helper Format Rupiah
-const formatRupiah = (num: number) => new Intl.NumberFormat('id-ID').format(num);
+// Helper Format Rupiah (Tanpa : number)
+const formatRupiah = (num) => new Intl.NumberFormat('id-ID').format(num);
 
 // ==================================================================
 // 2. HELPER KEYBOARD
 // ==================================================================
-function createDynamicKeyboard(totalItems: number) {
+function createDynamicKeyboard(totalItems) {
     const topMenu = [{ text: "🏷 List Produk" }, { text: "🛍 Voucher" }];
     const midMenu = [{ text: "📦 Laporan Stok" }, { text: "❓ Cara" }];
     const bottomMenu = [{ text: "⚠️ Information" }];
@@ -65,7 +62,7 @@ function createDynamicKeyboard(totalItems: number) {
 // ==================================================================
 // 3. MAIN ROUTE HANDLER
 // ==================================================================
-export async function POST(req: Request) {
+export async function POST(req) {
     if (!bot) return NextResponse.json({ error: 'Bot inactive' });
 
     try {
@@ -93,7 +90,7 @@ export async function POST(req: Request) {
 // ==================================================================
 
 // --- A. CALLBACK QUERY (Tombol Klik) ---
-async function handleCallbackQuery(query: any) {
+async function handleCallbackQuery(query) {
     if(!bot) return;
     const chatId = query.message.chat.id;
     const messageId = query.message.message_id;
@@ -172,14 +169,13 @@ Silakan transfer lalu <b>kirim FOTO BUKTI TRANSFER</b> di chat ini.
 }
 
 // --- B. TEXT MESSAGE ---
-async function handleTextMessage(msg: any) {
+async function handleTextMessage(msg) {
     if(!bot) return;
     const chatId = msg.chat.id;
     const text = msg.text;
     const user = msg.from;
 
     // --- LOGIC ADMIN REPLY ---
-    // Jika @sofunsyabi (662362624) me-reply pesan
     if (String(chatId) === ADMIN_ID) {
         if (msg.reply_to_message && msg.reply_to_message.from.is_bot) {
             await handleAdminReply(msg);
@@ -230,7 +226,7 @@ async function handleTextMessage(msg: any) {
 }
 
 // --- C. PHOTO HANDLER (Bukti Transfer) ---
-async function handlePhotoMessage(msg: any) {
+async function handlePhotoMessage(msg) {
     if(!bot) return;
     const chatId = msg.chat.id;
     
@@ -274,7 +270,7 @@ async function handlePhotoMessage(msg: any) {
         await bot.deleteMessage(chatId, waitMsg.message_id).catch(()=>{});
         await bot.sendMessage(chatId, `✅ <b>Bukti Diterima!</b>\nMohon tunggu verifikasi admin.`, { parse_mode: 'HTML' });
 
-        // NOTIF KE ADMIN @sofunsyabi
+        // NOTIF KE ADMIN
         const adminMsg = `
 🔔 <b>BUKTI TRANSFER BARU</b>
 User: <code>${chatId}</code>
@@ -291,10 +287,10 @@ URL: ${proofUrl}
 }
 
 // ==================================================================
-// 5. HELPER FUNCTIONS (List Produk, Detail, Chat)
+// 5. HELPER FUNCTIONS
 // ==================================================================
 
-async function sendProductList(chatId: number | string, kb: any) {
+async function sendProductList(chatId, kb) {
     if(!bot) return;
     const { data: products } = await supabase.from('products').select('*').eq('is_active', true).order('id', { ascending: true }).limit(MAX_BUTTONS_DISPLAY);
     
@@ -308,7 +304,7 @@ async function sendProductList(chatId: number | string, kb: any) {
     await bot.sendMessage(chatId, msg, { parse_mode: 'HTML', reply_markup: kb });
 }
 
-async function showProductDetail(chatId: number | string, num: number, kb: any) {
+async function showProductDetail(chatId, num, kb) {
     if(!bot) return;
     const { data: products } = await supabase.from('products').select('*').eq('is_active', true).order('id', { ascending: true }).limit(MAX_BUTTONS_DISPLAY);
     
@@ -323,7 +319,7 @@ async function showProductDetail(chatId: number | string, num: number, kb: any) 
 
     if (Array.isArray(variants) && variants.length > 0) {
         text += `👇 <b>Pilih Paket:</b>`;
-        variants.forEach((v: any, idx: number) => {
+        variants.forEach((v, idx) => {
             buttons.push([{ text: `📦 ${v.name} - Rp ${formatRupiah(v.price)}`, callback_data: `vcheckout_${item.id}_${idx}` }]);
         });
     } else {
@@ -338,7 +334,7 @@ async function showProductDetail(chatId: number | string, num: number, kb: any) 
 
 // --- LIVE CHAT HELPERS ---
 
-async function handleUserChatToAdmin(chatId: number, user: any, text: string) {
+async function handleUserChatToAdmin(chatId, user, text) {
     if(!bot) return;
 
     // 1. Cek / Buat Room
@@ -359,7 +355,7 @@ async function handleUserChatToAdmin(chatId: number, user: any, text: string) {
         content: text
     });
 
-    // 3. Notif ke @sofunsyabi
+    // 3. Notif ke Admin
     const adminMsg = `
 📩 <b>PESAN DARI USER</b>
 👤 <b>Nama:</b> ${user.first_name} (@${user.username || '-'})
@@ -370,7 +366,7 @@ ${text}
     await bot.sendMessage(ADMIN_ID, adminMsg, { parse_mode: 'HTML' });
 }
 
-async function handleAdminReply(msg: any) {
+async function handleAdminReply(msg) {
     if(!bot) return;
     const adminText = msg.text;
     const originalText = msg.reply_to_message?.text || "";
