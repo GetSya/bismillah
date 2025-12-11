@@ -9,8 +9,8 @@ import { createClient } from '@supabase/supabase-js';
 // Wajib untuk Webhook Telegram agar tidak di-cache
 export const dynamic = 'force-dynamic';
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URLKU;
+const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEYKU;
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const ADMIN_ID = process.env.ADMIN_ID;
 
