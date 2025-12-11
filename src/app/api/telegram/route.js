@@ -3,19 +3,37 @@ import TelegramBot from 'node-telegram-bot-api';
 import { createClient } from '@supabase/supabase-js';
 
 // ==================================================================
-// 1. CONFIGURATION
+// 1. CONFIGURATION & TYPES
 // ==================================================================
+
+// Pastikan route ini tidak di-cache oleh Next.js (Wajib untuk Webhook Telegram)
+export const dynamic = 'force-dynamic';
+
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
-const supabase = createClient(supabaseUrl, supabaseKey);
-
 const token = process.env.TELEGRAM_BOT_TOKEN;
-const bot = token ? new TelegramBot(token, { polling: false }) : null;
-
-// ID Admin untuk Forward Chat (Wajib diisi di Environment Variable Vercel: ADMIN_ID)
 const ADMIN_ID = process.env.ADMIN_ID;
 
-const ADMIN_REKENING = { bank: "BCA", no: "123456789", name: "Admin Store" };
+// Validasi Environment Variables agar tidak error silent
+if (!supabaseUrl || !supabaseKey || !token) {
+    throw new Error("❌ Missing Environment Variables: Cek SUPABASE_URL, SUPABASE_KEY, atau TELEGRAM_BOT_TOKEN");
+}
+
+const supabase = createClient(supabaseUrl, supabaseKey);
+const bot = new TelegramBot(token, { polling: false });
+
+const ADMIN_REKENING = { 
+    bank: "BCA", 
+    no: "123456789", 
+    name: "Admin Store" 
+};
+
+// Interface sederhana untuk Update Telegram
+interface TelegramUpdate {
+    update_id: number;
+    message?: TelegramBot.Message;
+    callback_query?: TelegramBot.CallbackQuery;
+}
 
 // ==================================================================
 // 2. HELPER: KEYBOARD DINAMIS
@@ -26,11 +44,11 @@ function generateKeyboard(totalItems: number) {
 
     const numberGrid = [];
     if (totalItems > 0) {
-        let currentRow = [];
-        const maxButtons = Math.min(totalItems, 50); // Limit 50 agar tidak error
+        let currentRow: TelegramBot.KeyboardButton[] = [];
+        const maxButtons = Math.min(totalItems, 50); // Limit 50 tombol
 
         for (let i = 1; i <= maxButtons; i++) {
-            currentRow.push({ text: \`\${i}\` });
+            currentRow.push({ text: `${i}` });
             if (currentRow.length === 6) {
                 numberGrid.push(currentRow);
                 currentRow = [];
@@ -48,27 +66,31 @@ function generateKeyboard(totalItems: number) {
 }
 
 // ==================================================================
-// 3. MAIN ROUTE HANDLER
+// 3. MAIN ROUTE HANDLER (POST)
 // ==================================================================
 export async function POST(req: Request) {
-    if (!bot) return NextResponse.json({ error: 'Bot inactive' }, { status: 500 });
-
     try {
-        const update = await req.json();
+        const update: TelegramUpdate = await req.json();
 
+        // Handle Text Message
         if (update.message?.text) {
             await handleTextMessage(update.message);
-        } else if (update.message?.photo) {
+        } 
+        // Handle Photo Message
+        else if (update.message?.photo) {
             await handlePhotoMessage(update.message);
-        } else if (update.callback_query) {
-             // Handle jika ada inline button (opsional)
+        } 
+        // Handle Callback Query (jika ada inline button)
+        else if (update.callback_query) {
              await bot.answerCallbackQuery(update.callback_query.id);
         }
 
+        // Selalu return 200 OK ke Telegram agar tidak retry loop
         return NextResponse.json({ ok: true });
     } catch (error) {
         console.error('SERVER ERROR:', error);
-        return NextResponse.json({ ok: true }); 
+        // Tetap return 200 OK meskipun error internal aplikasi, supaya Telegram tidak spam webhook
+        return NextResponse.json({ ok: true, error: 'Internal Server Error handled' }); 
     }
 }
 
@@ -76,24 +98,25 @@ export async function POST(req: Request) {
 // 4. LOGIC HANDLERS
 // ==================================================================
 
-async function handleTextMessage(msg: any) {
-    if(!bot) return;
+async function handleTextMessage(msg: TelegramBot.Message) {
     const chatId = msg.chat.id;
-    const text = msg.text;
+    const text = msg.text || '';
     const user = msg.from;
-    const firstName = user.first_name || 'Kak';
+    const firstName = user?.first_name || 'Kak';
+
+    if (!user) return;
 
     // Sync User ke Database
     await supabase.from('users').upsert({
         telegram_id: chatId,
         username: user.username,
-        full_name: \`\${user.first_name || ''} \${user.last_name || ''}\`.trim()
+        full_name: `${user.first_name || ''} ${user.last_name || ''}`.trim()
     });
 
     // ----------------------------------------------------
     // CASE A: User Klik Angka (Membeli Produk)
     // ----------------------------------------------------
-    if (/^\\d+$/.test(text)) {
+    if (/^\d+$/.test(text)) {
         const selectedNumber = parseInt(text);
         await handleProductSelection(chatId, selectedNumber);
         return; 
@@ -102,14 +125,13 @@ async function handleTextMessage(msg: any) {
     // ----------------------------------------------------
     // CASE B: Navigasi Menu
     // ----------------------------------------------------
-    // Hitung jumlah produk aktif untuk keyboard
     const { count } = await supabase.from('products').select('*', { count: 'exact', head: true }).eq('is_active', true);
     const totalProducts = count || 0;
     const dynamicMarkup = generateKeyboard(totalProducts);
 
     switch (text) {
         case '/start':
-            await bot.sendMessage(chatId, \`👋 <b>Halo, \${firstName}!</b>\\n\\nSelamat datang di Store kami.\\nJumlah Produk Ready: <b>\${totalProducts} Item</b>\\nSilakan pilih menu di bawah.\`, {
+            await bot.sendMessage(chatId, `👋 <b>Halo, ${firstName}!</b>\n\nSelamat datang di Store kami.\nJumlah Produk Ready: <b>${totalProducts} Item</b>\nSilakan pilih menu di bawah.`, {
                 parse_mode: 'HTML',
                 reply_markup: dynamicMarkup
             });
@@ -124,7 +146,7 @@ async function handleTextMessage(msg: any) {
             break;
             
         case '📦 Laporan Stok':
-             await bot.sendMessage(chatId, \`📊 <b>Status Stok:</b>\\n\\n🟢 Total Produk Aktif: \${totalProducts}\\n⚪ Produk Non-Aktif: (Sesuai DB)\\n\\n<i>Stok selalu update real-time.</i>\`, { parse_mode: 'HTML', reply_markup: dynamicMarkup });
+             await bot.sendMessage(chatId, `📊 <b>Status Stok:</b>\n\n🟢 Total Produk Aktif: ${totalProducts}\n⚪ Produk Non-Aktif: (Sesuai DB)\n\n<i>Stok selalu update real-time.</i>`, { parse_mode: 'HTML', reply_markup: dynamicMarkup });
              break;
 
         case '💰 Deposit':
@@ -132,15 +154,15 @@ async function handleTextMessage(msg: any) {
             break;
 
         case '❓ Cara':
-            await bot.sendMessage(chatId, "📚 <b>Cara Order:</b>\\n1. Klik menu 'List Produk'\\n2. Lihat nomor produk\\n3. Tekan angka di keyboard\\n4. Transfer & kirim bukti.", { parse_mode: 'HTML', reply_markup: dynamicMarkup });
+            await bot.sendMessage(chatId, "📚 <b>Cara Order:</b>\n1. Klik menu 'List Produk'\n2. Lihat nomor produk\n3. Tekan angka di keyboard\n4. Transfer & kirim bukti.", { parse_mode: 'HTML', reply_markup: dynamicMarkup });
             break;
 
         default:
              // ----------------------------------------------------
-             // CASE C: LIVE CHAT & FORWARDING (Jika tidak ada match menu)
+             // CASE C: LIVE CHAT & FORWARDING
              // ----------------------------------------------------
              
-             // 1. Simpan ke Database (Supabase) untuk Web Admin Panel
+             // 1. Simpan Chat Room & Pesan
              let { data: room } = await supabase.from('chat_rooms').select('id').eq('user_id', chatId).single();
              if (!room) {
                   const { data: newRoom } = await supabase.from('chat_rooms').insert({ user_id: chatId }).select().single();
@@ -150,49 +172,45 @@ async function handleTextMessage(msg: any) {
              if (room) {
                   await supabase.from('chat_messages').insert({
                       room_id: room.id,
-                      is_admin: false, // Pesan dari User
+                      is_admin: false,
                       message_type: 'text',
                       content: text,
                       is_read: false
                   });
              }
  
-             // 2. Forward Pesan ke Telegram Admin (@chenxiamomo / ADMIN_ID)
+             // 2. Forward ke Admin
              if (ADMIN_ID && String(chatId) !== String(ADMIN_ID)) {
-                 const forwardText = \`📩 <b>Pesan dari Pelanggan</b>\n👤 <b>User:</b> \${user.first_name} (@\${user.username || '-'})\n🆔 <b>ID:</b> <code>\${chatId}</code>\n\n💬 <b>Pesan:</b>\n\${text}\n\n<i>*Balas melalui Panel Admin atau Bot*</i>\`;
+                 const forwardText = `📩 <b>Pesan dari Pelanggan</b>\n👤 <b>User:</b> ${user.first_name} (@${user.username || '-'})\n🆔 <b>ID:</b> <code>${chatId}</code>\n\n💬 <b>Pesan:</b>\n${text}\n\n<i>*Balas melalui Panel Admin atau Bot*</i>`;
                  await bot.sendMessage(ADMIN_ID, forwardText, { parse_mode: 'HTML' });
-             } else {
-                 // Feedback ke user jika bukan admin yang test
-                 // await bot.sendMessage(chatId, "Pesan terkirim ke admin. Mohon tunggu balasan.", { reply_markup: dynamicMarkup });
              }
              break;
     }
 }
 
 // ==========================================
-// 📄 LOGIC TAMPILAN LIST (SYNC DENGAN NOMOR)
+// 📄 LOGIC TAMPILAN LIST
 // ==========================================
-async function showProductList(chatId: number | string, markupKeyboard: any) {
-    if(!bot) return;
+async function showProductList(chatId: number, markupKeyboard: any) {
     const { data: products } = await supabase
         .from('products')
         .select('*')
         .eq('is_active', true)
-        .order('price', { ascending: true }) // SAMA DENGAN LOGIC SELECTION
+        .order('price', { ascending: true })
         .limit(50);
 
     if (!products || products.length === 0) {
         return bot.sendMessage(chatId, "🙏 Mohon maaf, produk sedang kosong.", { reply_markup: markupKeyboard });
     }
 
-    let message = \`🛒 <b>DAFTAR PRODUK (\${products.length} Item)</b>\\n\`;
-    message += \`<i>Klik nomor di tombol bawah sesuai produk:</i>\\n\\n\`;
+    let message = `🛒 <b>DAFTAR PRODUK (${products.length} Item)</b>\n`;
+    message += `<i>Klik nomor di tombol bawah sesuai produk:</i>\n\n`;
 
     products.forEach((p, index) => {
         const num = index + 1; 
         const price = new Intl.NumberFormat('id-ID').format(p.price);
-        message += \`<b>[\${num}] \${p.name.toUpperCase()}</b>\\n\`;
-        message += \`   └ Rp \${price}\\n\\n\`;
+        message += `<b>[${num}] ${p.name.toUpperCase()}</b>\n`;
+        message += `   └ Rp ${price}\n\n`;
     });
 
     await bot.sendMessage(chatId, message, {
@@ -204,10 +222,7 @@ async function showProductList(chatId: number | string, markupKeyboard: any) {
 // ==========================================
 // 🛒 LOGIC PROSES BELI
 // ==========================================
-async function handleProductSelection(chatId: number | string, num: number) {
-    if(!bot) return;
-    
-    // 1. Ambil Data Lagi (Urutan harus SAMA PERSIS dengan showProductList)
+async function handleProductSelection(chatId: number, num: number) {
     const { data: products } = await supabase
         .from('products')
         .select('*')
@@ -217,13 +232,12 @@ async function handleProductSelection(chatId: number | string, num: number) {
     
     const index = num - 1; 
 
-    // Refresh keyboard count
+    // Re-check count for keyboard
     const { count } = await supabase.from('products').select('*', { count: 'exact', head: true }).eq('is_active', true);
     const dynamicMarkup = generateKeyboard(count || 0);
 
-    // Validasi
     if (!products || !products[index]) {
-        return bot.sendMessage(chatId, \`⚠️ <b>Produk [\${num}] tidak ditemukan.</b>\\nMungkin urutan stok berubah. Silakan klik 'List Produk' lagi.\`, {
+        return bot.sendMessage(chatId, `⚠️ <b>Produk [${num}] tidak ditemukan.</b>\nMungkin urutan stok berubah. Silakan klik 'List Produk' lagi.`, {
             parse_mode: 'HTML',
             reply_markup: dynamicMarkup
         });
@@ -232,7 +246,6 @@ async function handleProductSelection(chatId: number | string, num: number) {
     const p = products[index];
     const price = new Intl.NumberFormat('id-ID').format(p.price);
 
-    // Proses Invoice (Buat Order Pending)
     const { data: order, error } = await supabase.from('orders').insert({
         user_id: chatId,
         product_id: p.id,
@@ -240,23 +253,24 @@ async function handleProductSelection(chatId: number | string, num: number) {
         status: 'pending'
     }).select().single();
 
-    if(error) return bot.sendMessage(chatId, "❌ Gagal membuat order. Coba lagi.");
+    if(error) return bot.sendMessage(chatId, "❌ Gagal membuat order. Coba lagi.", { reply_markup: dynamicMarkup });
 
-    const text = \`🧾 <b>INVOICE #\${order.id}</b>\\n\\n📦 <b>\${p.name}</b>\\n💰 <b>Rp \${price}</b>\\n\\nSilakan transfer ke <b>\${ADMIN_REKENING.bank}</b>\\nNo: <code>\${ADMIN_REKENING.no}</code>\\nA.N \${ADMIN_REKENING.name}\\n\\n📸 <b>Lalu kirim bukti foto disini.</b>\`;
+    const text = `🧾 <b>INVOICE #${order.id}</b>\n\n📦 <b>${p.name}</b>\n💰 <b>Rp ${price}</b>\n\nSilakan transfer ke <b>${ADMIN_REKENING.bank}</b>\nNo: <code>${ADMIN_REKENING.no}</code>\nA.N ${ADMIN_REKENING.name}\n\n📸 <b>Lalu kirim bukti foto disini.</b>`;
     
-    // Kirim Invoice (Keyboard tetap nempel)
     await bot.sendMessage(chatId, text, {
         parse_mode: 'HTML',
         reply_markup: dynamicMarkup 
     });
 }
 
-async function handlePhotoMessage(msg: any) {
-    if(!bot) return;
+// ==========================================
+// 📸 LOGIC HANDLE FOTO
+// ==========================================
+async function handlePhotoMessage(msg: TelegramBot.Message) {
     const chatId = msg.chat.id;
     const user = msg.from;
     
-    // Cek apakah ada Order Pending dari user ini?
+    // Cek Order Pending
     const { data: order } = await supabase
         .from('orders')
         .select('*, products(name)')
@@ -266,7 +280,7 @@ async function handlePhotoMessage(msg: any) {
         .limit(1)
         .single();
 
-    if (order) {
+    if (order && msg.photo) {
         // --- CASE 1: BUKTI BAYAR ---
         const waitMsg = await bot.sendMessage(chatId, "⏳ Sedang mengunggah bukti...");
         try {
@@ -275,37 +289,36 @@ async function handlePhotoMessage(msg: any) {
             const res = await fetch(fileLink);
             const blob = await res.blob();
 
-            // Upload ke Catbox (Gratis & Permanent untuk demo)
+            // Upload ke Catbox
             const formData = new FormData();
             formData.append('reqtype', 'fileupload');
-            formData.append('fileToUpload', blob, \`proof_\${order.id}.jpg\`);
+            formData.append('fileToUpload', blob, `proof_${order.id}.jpg`);
 
             const catboxRes = await fetch('https://catbox.moe/user/api.php', { method: 'POST', body: formData });
             if (!catboxRes.ok) throw new Error("Catbox Failed");
             const proofUrl = await catboxRes.text();
 
-            // Update Order jadi Verification
+            // Update Order
             await supabase.from('orders').update({
                 status: 'verification',
                 payment_proof_url: proofUrl
             }).eq('id', order.id);
 
             await bot.deleteMessage(chatId, waitMsg.message_id).catch(()=>{});
-            await bot.sendMessage(chatId, \`✅ <b>Bukti Diterima!</b>\\nOrder #\${order.id} sedang diverifikasi admin.\`, { parse_mode: 'HTML' });
+            await bot.sendMessage(chatId, `✅ <b>Bukti Diterima!</b>\nOrder #${order.id} sedang diverifikasi admin.`, { parse_mode: 'HTML' });
 
-            // Notif ke Admin
             if (ADMIN_ID) {
-                await bot.sendMessage(ADMIN_ID, \`🔔 <b>Bukti Transfer Baru</b>\\nOrder #\${order.id}\\nUser: \${chatId}\\nURL: \${proofUrl}\`, { parse_mode: 'HTML' });
+                await bot.sendMessage(ADMIN_ID, `🔔 <b>Bukti Transfer Baru</b>\nOrder #${order.id}\nUser: ${chatId}\nURL: ${proofUrl}`, { parse_mode: 'HTML' });
             }
         } catch (e) {
             console.error("Upload Error:", e);
-            await bot.sendMessage(chatId, "❌ Gagal mengunggah bukti.");
+            await bot.sendMessage(chatId, "❌ Gagal mengunggah bukti. Silakan coba lagi.");
         }
     } else {
-        // --- CASE 2: LIVE CHAT FOTO (FORWARD KE ADMIN) ---
-        if (ADMIN_ID && String(chatId) !== String(ADMIN_ID)) {
+        // --- CASE 2: LIVE CHAT FOTO ---
+        if (ADMIN_ID && String(chatId) !== String(ADMIN_ID) && msg.photo && user) {
              const fileId = msg.photo[msg.photo.length - 1].file_id;
-             await bot.sendPhoto(ADMIN_ID, fileId, { caption: \`📸 <b>Foto dari User</b>\n\${user.first_name} (@\${user.username || '-'}) - \${chatId}\`, parse_mode: 'HTML' });
+             await bot.sendPhoto(ADMIN_ID, fileId, { caption: `📸 <b>Foto dari User</b>\n${user.first_name} (@${user.username || '-'}) - ${chatId}`, parse_mode: 'HTML' });
              await bot.sendMessage(chatId, "📸 Foto terkirim ke admin.");
         }
     }
