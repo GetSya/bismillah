@@ -5,54 +5,42 @@ import { createClient } from '@supabase/supabase-js';
 // ==================================================================
 // 1. CONFIGURATION
 // ==================================================================
-// Hapus tanda seru (!) dan tipe data
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URLKU; 
-const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEYKU;
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
+const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
 const supabase = createClient(supabaseUrl, supabaseKey);
 
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const bot = token ? new TelegramBot(token, { polling: false }) : null;
 
-// ID ADMIN TETAP
-const ADMIN_ID = '662362624'; 
+// ID Admin untuk Forward Chat (Wajib diisi di Environment Variable Vercel: ADMIN_ID)
+const ADMIN_ID = process.env.ADMIN_ID;
 
-const BANK_INFO = {
-    bank: "BCA",
-    number: "1234-5678-9000",
-    name: "STORE OFFICIAL"
-};
-
-const MAX_BUTTONS_DISPLAY = 50;
-const BUTTONS_PER_ROW = 6;
-
-// Helper Format Rupiah (Tanpa : number)
-const formatRupiah = (num) => new Intl.NumberFormat('id-ID').format(num);
+const ADMIN_REKENING = { bank: "BCA", no: "123456789", name: "Admin Store" };
 
 // ==================================================================
-// 2. HELPER KEYBOARD
+// 2. HELPER: KEYBOARD DINAMIS
 // ==================================================================
-function createDynamicKeyboard(totalItems) {
-    const topMenu = [{ text: "🏷 List Produk" }, { text: "🛍 Voucher" }];
-    const midMenu = [{ text: "📦 Laporan Stok" }, { text: "❓ Cara" }];
-    const bottomMenu = [{ text: "⚠️ Information" }];
+function generateKeyboard(totalItems: number) {
+    const topRow = [{ text: "🏷 List Produk" }, { text: "🛍 Voucher" }, { text: "📦 Laporan Stok" }];
+    const bottomRow = [{ text: "💰 Deposit" }, { text: "❓ Cara" }, { text: "⚠️ Information" }];
 
     const numberGrid = [];
-    const count = Math.min(totalItems, MAX_BUTTONS_DISPLAY);
+    if (totalItems > 0) {
+        let currentRow = [];
+        const maxButtons = Math.min(totalItems, 50); // Limit 50 agar tidak error
 
-    if (count > 0) {
-        let tempRow = [];
-        for (let i = 1; i <= count; i++) {
-            tempRow.push({ text: `${i}` });
-            if (tempRow.length === BUTTONS_PER_ROW) {
-                numberGrid.push(tempRow);
-                tempRow = [];
+        for (let i = 1; i <= maxButtons; i++) {
+            currentRow.push({ text: \`\${i}\` });
+            if (currentRow.length === 6) {
+                numberGrid.push(currentRow);
+                currentRow = [];
             }
         }
-        if (tempRow.length > 0) numberGrid.push(tempRow);
+        if (currentRow.length > 0) numberGrid.push(currentRow);
     }
 
     return {
-        keyboard: [topMenu, midMenu, ...numberGrid, bottomMenu],
+        keyboard: [topRow, ...numberGrid, bottomRow],
         resize_keyboard: true,
         is_persistent: true,
         input_field_placeholder: "Pilih menu..."
@@ -62,26 +50,25 @@ function createDynamicKeyboard(totalItems) {
 // ==================================================================
 // 3. MAIN ROUTE HANDLER
 // ==================================================================
-export async function POST(req) {
-    if (!bot) return NextResponse.json({ error: 'Bot inactive' });
+export async function POST(req: Request) {
+    if (!bot) return NextResponse.json({ error: 'Bot inactive' }, { status: 500 });
 
     try {
         const update = await req.json();
 
-        if (update.callback_query) {
-            await handleCallbackQuery(update.callback_query);
-        } 
-        else if (update.message?.text) {
+        if (update.message?.text) {
             await handleTextMessage(update.message);
-        } 
-        else if (update.message?.photo) {
+        } else if (update.message?.photo) {
             await handlePhotoMessage(update.message);
+        } else if (update.callback_query) {
+             // Handle jika ada inline button (opsional)
+             await bot.answerCallbackQuery(update.callback_query.id);
         }
 
         return NextResponse.json({ ok: true });
     } catch (error) {
-        console.error('Server Error:', error);
-        return NextResponse.json({ ok: true });
+        console.error('SERVER ERROR:', error);
+        return NextResponse.json({ ok: true }); 
     }
 }
 
@@ -89,148 +76,187 @@ export async function POST(req) {
 // 4. LOGIC HANDLERS
 // ==================================================================
 
-// --- A. CALLBACK QUERY (Tombol Klik) ---
-async function handleCallbackQuery(query) {
-    if(!bot) return;
-    const chatId = query.message.chat.id;
-    const messageId = query.message.message_id;
-    const data = query.data;
-
-    await bot.answerCallbackQuery(query.id).catch(()=>{});
-
-    if (data === 'cancel') {
-        await bot.deleteMessage(chatId, messageId).catch(()=>{});
-        return;
-    }
-
-    let productId = null;
-    let variantIndex = -1;
-
-    if (data.startsWith('checkout_')) {
-        productId = data.split('_')[1];
-    } else if (data.startsWith('vcheckout_')) {
-        const parts = data.split('_');
-        productId = parts[1];
-        variantIndex = parseInt(parts[2]);
-    } else {
-        return;
-    }
-
-    // 1. Get Product
-    const { data: product } = await supabase.from('products').select('*').eq('id', productId).single();
-    if (!product) return bot.sendMessage(chatId, "⚠️ Produk tidak ditemukan.");
-
-    // 2. Calculate Price
-    let finalPrice = product.price;
-    let finalVariantName = null;
-    
-    if (variantIndex > -1) {
-        const variants = typeof product.variants === 'string' ? JSON.parse(product.variants) : product.variants;
-        if (variants && variants[variantIndex]) {
-            finalPrice = variants[variantIndex].price;
-            finalVariantName = variants[variantIndex].name;
-        }
-    }
-
-    // 3. Create Order
-    const { data: order, error } = await supabase.from('orders').insert({
-        user_id: chatId,
-        product_id: productId,
-        total_price: finalPrice,
-        variant_name: finalVariantName,
-        status: 'pending'
-    }).select().single();
-
-    if (error) return bot.sendMessage(chatId, "❌ Gagal membuat invoice.");
-
-    // 4. Send Invoice
-    const invoiceMsg = `
-⚡️ <b>TAGIHAN PEMBAYARAN (#${order.id})</b>
-────────────────────
-📦 <b>Item:</b> ${product.name}
-🔖 <b>Varian:</b> ${finalVariantName || '-'}
-💰 <b>Total:</b> Rp ${formatRupiah(finalPrice)}
-────────────────────
-
-🏦 <b>TRANSFER KE:</b>
-<b>${BANK_INFO.bank}</b>
-<code>${BANK_INFO.number}</code>
-A.N ${BANK_INFO.name}
-
-📸 <b>INSTRUKSI:</b>
-Silakan transfer lalu <b>kirim FOTO BUKTI TRANSFER</b> di chat ini.
-    `;
-
-    await bot.editMessageText(invoiceMsg, {
-        chat_id: chatId,
-        message_id: messageId,
-        parse_mode: 'HTML'
-    });
-}
-
-// --- B. TEXT MESSAGE ---
-async function handleTextMessage(msg) {
+async function handleTextMessage(msg: any) {
     if(!bot) return;
     const chatId = msg.chat.id;
     const text = msg.text;
     const user = msg.from;
+    const firstName = user.first_name || 'Kak';
 
-    // --- LOGIC ADMIN REPLY ---
-    if (String(chatId) === ADMIN_ID) {
-        if (msg.reply_to_message && msg.reply_to_message.from.is_bot) {
-            await handleAdminReply(msg);
-        } else if (text === '/start') {
-            await bot.sendMessage(chatId, "👮‍♂️ <b>Admin Mode</b>\nReply pesan user untuk membalas.", {parse_mode:'HTML'});
-        }
-        return; 
-    }
-
-    // --- LOGIC USER BIASA ---
+    // Sync User ke Database
     await supabase.from('users').upsert({
         telegram_id: chatId,
         username: user.username,
-        full_name: `${user.first_name || ''} ${user.last_name || ''}`.trim()
+        full_name: \`\${user.first_name || ''} \${user.last_name || ''}\`.trim()
     });
 
-    const { count } = await supabase.from('products').select('*', { count: 'exact', head: true }).eq('is_active', true);
-    const kb = createDynamicKeyboard(count || 0);
-
-    // Seleksi Nomor Produk
-    if (/^\d+$/.test(text) && text.length < 4) {
-        await showProductDetail(chatId, parseInt(text), kb);
-        return;
+    // ----------------------------------------------------
+    // CASE A: User Klik Angka (Membeli Produk)
+    // ----------------------------------------------------
+    if (/^\\d+$/.test(text)) {
+        const selectedNumber = parseInt(text);
+        await handleProductSelection(chatId, selectedNumber);
+        return; 
     }
+
+    // ----------------------------------------------------
+    // CASE B: Navigasi Menu
+    // ----------------------------------------------------
+    // Hitung jumlah produk aktif untuk keyboard
+    const { count } = await supabase.from('products').select('*', { count: 'exact', head: true }).eq('is_active', true);
+    const totalProducts = count || 0;
+    const dynamicMarkup = generateKeyboard(totalProducts);
 
     switch (text) {
         case '/start':
-            await bot.sendMessage(chatId, `👋 <b>Halo, ${user.first_name}!</b>\nSelamat datang di Store Bot.`, { parse_mode: 'HTML', reply_markup: kb });
+            await bot.sendMessage(chatId, \`👋 <b>Halo, \${firstName}!</b>\\n\\nSelamat datang di Store kami.\\nJumlah Produk Ready: <b>\${totalProducts} Item</b>\\nSilakan pilih menu di bawah.\`, {
+                parse_mode: 'HTML',
+                reply_markup: dynamicMarkup
+            });
             break;
 
         case '🏷 List Produk':
-            await sendProductList(chatId, kb);
+            await showProductList(chatId, dynamicMarkup);
             break;
-
-        case '❓ Cara':
-            await bot.sendMessage(chatId, "📚 <b>Cara Order:</b>\n1. Pilih List Produk\n2. Ketik Angka\n3. Transfer & Kirim Bukti", { parse_mode: 'HTML', reply_markup: kb });
+        
+        case '🛍 Voucher':
+            await bot.sendMessage(chatId, "Voucher sedang kosong.", { reply_markup: dynamicMarkup });
             break;
             
         case '📦 Laporan Stok':
-             await bot.sendMessage(chatId, `📦 Produk Aktif: <b>${count}</b> Item`, { parse_mode: 'HTML', reply_markup: kb });
+             await bot.sendMessage(chatId, \`📊 <b>Status Stok:</b>\\n\\n🟢 Total Produk Aktif: \${totalProducts}\\n⚪ Produk Non-Aktif: (Sesuai DB)\\n\\n<i>Stok selalu update real-time.</i>\`, { parse_mode: 'HTML', reply_markup: dynamicMarkup });
              break;
 
-        default:
-            // Input Text Biasa -> Masuk Live Chat ke Admin
-            await handleUserChatToAdmin(chatId, user, text);
+        case '💰 Deposit':
+            await bot.sendMessage(chatId, "Fitur deposit hubungi Admin.", { reply_markup: dynamicMarkup });
             break;
+
+        case '❓ Cara':
+            await bot.sendMessage(chatId, "📚 <b>Cara Order:</b>\\n1. Klik menu 'List Produk'\\n2. Lihat nomor produk\\n3. Tekan angka di keyboard\\n4. Transfer & kirim bukti.", { parse_mode: 'HTML', reply_markup: dynamicMarkup });
+            break;
+
+        default:
+             // ----------------------------------------------------
+             // CASE C: LIVE CHAT & FORWARDING (Jika tidak ada match menu)
+             // ----------------------------------------------------
+             
+             // 1. Simpan ke Database (Supabase) untuk Web Admin Panel
+             let { data: room } = await supabase.from('chat_rooms').select('id').eq('user_id', chatId).single();
+             if (!room) {
+                  const { data: newRoom } = await supabase.from('chat_rooms').insert({ user_id: chatId }).select().single();
+                  room = newRoom;
+             }
+ 
+             if (room) {
+                  await supabase.from('chat_messages').insert({
+                      room_id: room.id,
+                      is_admin: false, // Pesan dari User
+                      message_type: 'text',
+                      content: text,
+                      is_read: false
+                  });
+             }
+ 
+             // 2. Forward Pesan ke Telegram Admin (@chenxiamomo / ADMIN_ID)
+             if (ADMIN_ID && String(chatId) !== String(ADMIN_ID)) {
+                 const forwardText = \`📩 <b>Pesan dari Pelanggan</b>\n👤 <b>User:</b> \${user.first_name} (@\${user.username || '-'})\n🆔 <b>ID:</b> <code>\${chatId}</code>\n\n💬 <b>Pesan:</b>\n\${text}\n\n<i>*Balas melalui Panel Admin atau Bot*</i>\`;
+                 await bot.sendMessage(ADMIN_ID, forwardText, { parse_mode: 'HTML' });
+             } else {
+                 // Feedback ke user jika bukan admin yang test
+                 // await bot.sendMessage(chatId, "Pesan terkirim ke admin. Mohon tunggu balasan.", { reply_markup: dynamicMarkup });
+             }
+             break;
     }
 }
 
-// --- C. PHOTO HANDLER (Bukti Transfer) ---
-async function handlePhotoMessage(msg) {
+// ==========================================
+// 📄 LOGIC TAMPILAN LIST (SYNC DENGAN NOMOR)
+// ==========================================
+async function showProductList(chatId: number | string, markupKeyboard: any) {
+    if(!bot) return;
+    const { data: products } = await supabase
+        .from('products')
+        .select('*')
+        .eq('is_active', true)
+        .order('price', { ascending: true }) // SAMA DENGAN LOGIC SELECTION
+        .limit(50);
+
+    if (!products || products.length === 0) {
+        return bot.sendMessage(chatId, "🙏 Mohon maaf, produk sedang kosong.", { reply_markup: markupKeyboard });
+    }
+
+    let message = \`🛒 <b>DAFTAR PRODUK (\${products.length} Item)</b>\\n\`;
+    message += \`<i>Klik nomor di tombol bawah sesuai produk:</i>\\n\\n\`;
+
+    products.forEach((p, index) => {
+        const num = index + 1; 
+        const price = new Intl.NumberFormat('id-ID').format(p.price);
+        message += \`<b>[\${num}] \${p.name.toUpperCase()}</b>\\n\`;
+        message += \`   └ Rp \${price}\\n\\n\`;
+    });
+
+    await bot.sendMessage(chatId, message, {
+        parse_mode: 'HTML',
+        reply_markup: markupKeyboard
+    });
+}
+
+// ==========================================
+// 🛒 LOGIC PROSES BELI
+// ==========================================
+async function handleProductSelection(chatId: number | string, num: number) {
+    if(!bot) return;
+    
+    // 1. Ambil Data Lagi (Urutan harus SAMA PERSIS dengan showProductList)
+    const { data: products } = await supabase
+        .from('products')
+        .select('*')
+        .eq('is_active', true)
+        .order('price', { ascending: true }) 
+        .limit(50);
+    
+    const index = num - 1; 
+
+    // Refresh keyboard count
+    const { count } = await supabase.from('products').select('*', { count: 'exact', head: true }).eq('is_active', true);
+    const dynamicMarkup = generateKeyboard(count || 0);
+
+    // Validasi
+    if (!products || !products[index]) {
+        return bot.sendMessage(chatId, \`⚠️ <b>Produk [\${num}] tidak ditemukan.</b>\\nMungkin urutan stok berubah. Silakan klik 'List Produk' lagi.\`, {
+            parse_mode: 'HTML',
+            reply_markup: dynamicMarkup
+        });
+    }
+
+    const p = products[index];
+    const price = new Intl.NumberFormat('id-ID').format(p.price);
+
+    // Proses Invoice (Buat Order Pending)
+    const { data: order, error } = await supabase.from('orders').insert({
+        user_id: chatId,
+        product_id: p.id,
+        total_price: p.price,
+        status: 'pending'
+    }).select().single();
+
+    if(error) return bot.sendMessage(chatId, "❌ Gagal membuat order. Coba lagi.");
+
+    const text = \`🧾 <b>INVOICE #\${order.id}</b>\\n\\n📦 <b>\${p.name}</b>\\n💰 <b>Rp \${price}</b>\\n\\nSilakan transfer ke <b>\${ADMIN_REKENING.bank}</b>\\nNo: <code>\${ADMIN_REKENING.no}</code>\\nA.N \${ADMIN_REKENING.name}\\n\\n📸 <b>Lalu kirim bukti foto disini.</b>\`;
+    
+    // Kirim Invoice (Keyboard tetap nempel)
+    await bot.sendMessage(chatId, text, {
+        parse_mode: 'HTML',
+        reply_markup: dynamicMarkup 
+    });
+}
+
+async function handlePhotoMessage(msg: any) {
     if(!bot) return;
     const chatId = msg.chat.id;
+    const user = msg.from;
     
-    // Cari Order Pending Terakhir
+    // Cek apakah ada Order Pending dari user ini?
     const { data: order } = await supabase
         .from('orders')
         .select('*, products(name)')
@@ -240,161 +266,47 @@ async function handlePhotoMessage(msg) {
         .limit(1)
         .single();
 
-    if (!order) {
-        return bot.sendMessage(chatId, "⚠️ Anda tidak memiliki tagihan Pending. Order dulu ya.");
-    }
+    if (order) {
+        // --- CASE 1: BUKTI BAYAR ---
+        const waitMsg = await bot.sendMessage(chatId, "⏳ Sedang mengunggah bukti...");
+        try {
+            const fileId = msg.photo[msg.photo.length - 1].file_id;
+            const fileLink = await bot.getFileLink(fileId);
+            const res = await fetch(fileLink);
+            const blob = await res.blob();
 
-    const waitMsg = await bot.sendMessage(chatId, "⏳ Upload bukti...");
+            // Upload ke Catbox (Gratis & Permanent untuk demo)
+            const formData = new FormData();
+            formData.append('reqtype', 'fileupload');
+            formData.append('fileToUpload', blob, \`proof_\${order.id}.jpg\`);
 
-    try {
-        const fileId = msg.photo[msg.photo.length - 1].file_id;
-        const fileLink = await bot.getFileLink(fileId);
-        
-        const res = await fetch(fileLink);
-        const blob = await res.blob();
+            const catboxRes = await fetch('https://catbox.moe/user/api.php', { method: 'POST', body: formData });
+            if (!catboxRes.ok) throw new Error("Catbox Failed");
+            const proofUrl = await catboxRes.text();
 
-        const formData = new FormData();
-        formData.append('reqtype', 'fileupload');
-        formData.append('fileToUpload', blob, `proof_${order.id}.jpg`);
+            // Update Order jadi Verification
+            await supabase.from('orders').update({
+                status: 'verification',
+                payment_proof_url: proofUrl
+            }).eq('id', order.id);
 
-        const catboxRes = await fetch('https://catbox.moe/user/api.php', { method: 'POST', body: formData });
-        if (!catboxRes.ok) throw new Error("Catbox Failed");
-        const proofUrl = await catboxRes.text();
+            await bot.deleteMessage(chatId, waitMsg.message_id).catch(()=>{});
+            await bot.sendMessage(chatId, \`✅ <b>Bukti Diterima!</b>\\nOrder #\${order.id} sedang diverifikasi admin.\`, { parse_mode: 'HTML' });
 
-        // Update DB
-        await supabase.from('orders').update({
-            status: 'verification',
-            payment_proof_url: proofUrl
-        }).eq('id', order.id);
-
-        await bot.deleteMessage(chatId, waitMsg.message_id).catch(()=>{});
-        await bot.sendMessage(chatId, `✅ <b>Bukti Diterima!</b>\nMohon tunggu verifikasi admin.`, { parse_mode: 'HTML' });
-
-        // NOTIF KE ADMIN
-        const adminMsg = `
-🔔 <b>BUKTI TRANSFER BARU</b>
-User: <code>${chatId}</code>
-Order: #${order.id}
-Item: ${order.products?.name}
-URL: ${proofUrl}
-`;
-        await bot.sendMessage(ADMIN_ID, adminMsg, { parse_mode: 'HTML' });
-
-    } catch (e) {
-        await bot.deleteMessage(chatId, waitMsg.message_id).catch(()=>{});
-        await bot.sendMessage(chatId, "❌ Gagal upload bukti. Coba lagi.");
-    }
-}
-
-// ==================================================================
-// 5. HELPER FUNCTIONS
-// ==================================================================
-
-async function sendProductList(chatId, kb) {
-    if(!bot) return;
-    const { data: products } = await supabase.from('products').select('*').eq('is_active', true).order('id', { ascending: true }).limit(MAX_BUTTONS_DISPLAY);
-    
-    if (!products || products.length === 0) return bot.sendMessage(chatId, "⚠️ Produk Kosong.", { reply_markup: kb });
-
-    let msg = `🛒 <b>LIST PRODUK</b>\n\n`;
-    products.forEach((p, idx) => {
-        msg += `<b>${idx + 1}. ${p.name}</b> - Rp ${formatRupiah(p.price)}\n`;
-    });
-    msg += `\n<i>Ketik nomor untuk membeli.</i>`;
-    await bot.sendMessage(chatId, msg, { parse_mode: 'HTML', reply_markup: kb });
-}
-
-async function showProductDetail(chatId, num, kb) {
-    if(!bot) return;
-    const { data: products } = await supabase.from('products').select('*').eq('is_active', true).order('id', { ascending: true }).limit(MAX_BUTTONS_DISPLAY);
-    
-    const item = products?.[num - 1];
-    if (!item) return bot.sendMessage(chatId, "⚠️ Produk tidak ditemukan.", { reply_markup: kb });
-
-    let variants = [];
-    try { variants = typeof item.variants === 'string' ? JSON.parse(item.variants) : item.variants; } catch(e) {}
-
-    let text = `🛍 <b>${item.name.toUpperCase()}</b>\n\n${item.description || '-'}\n\n`;
-    const buttons = [];
-
-    if (Array.isArray(variants) && variants.length > 0) {
-        text += `👇 <b>Pilih Paket:</b>`;
-        variants.forEach((v, idx) => {
-            buttons.push([{ text: `📦 ${v.name} - Rp ${formatRupiah(v.price)}`, callback_data: `vcheckout_${item.id}_${idx}` }]);
-        });
+            // Notif ke Admin
+            if (ADMIN_ID) {
+                await bot.sendMessage(ADMIN_ID, \`🔔 <b>Bukti Transfer Baru</b>\\nOrder #\${order.id}\\nUser: \${chatId}\\nURL: \${proofUrl}\`, { parse_mode: 'HTML' });
+            }
+        } catch (e) {
+            console.error("Upload Error:", e);
+            await bot.sendMessage(chatId, "❌ Gagal mengunggah bukti.");
+        }
     } else {
-        text += `💰 Harga: <b>Rp ${formatRupiah(item.price)}</b>`;
-        buttons.push([{ text: "✅ Beli Sekarang", callback_data: `checkout_${item.id}` }]);
-    }
-    buttons.push([{ text: "❌ Batal", callback_data: "cancel" }]);
-
-    if(item.image_url) await bot.sendPhoto(chatId, item.image_url, { caption: text, parse_mode: 'HTML', reply_markup: { inline_keyboard: buttons } });
-    else await bot.sendMessage(chatId, text, { parse_mode: 'HTML', reply_markup: { inline_keyboard: buttons } });
-}
-
-// --- LIVE CHAT HELPERS ---
-
-async function handleUserChatToAdmin(chatId, user, text) {
-    if(!bot) return;
-
-    // 1. Cek / Buat Room
-    let { data: room } = await supabase.from('chat_rooms').select('id').eq('user_id', chatId).single();
-    
-    if (!room) {
-        const { data: newRoom, error } = await supabase.from('chat_rooms').insert({ user_id: chatId }).select('id').single();
-        if(error) return; 
-        room = newRoom;
-    } else {
-        await supabase.from('chat_rooms').update({ updated_at: new Date().toISOString() }).eq('id', room.id);
-    }
-
-    // 2. Simpan Pesan User
-    await supabase.from('chat_messages').insert({
-        room_id: room.id,
-        is_admin: false,
-        content: text
-    });
-
-    // 3. Notif ke Admin
-    const adminMsg = `
-📩 <b>PESAN DARI USER</b>
-👤 <b>Nama:</b> ${user.first_name} (@${user.username || '-'})
-🆔 <b>ID:</b> <code>${chatId}</code>
-➖➖➖➖➖➖➖➖
-${text}
-`;
-    await bot.sendMessage(ADMIN_ID, adminMsg, { parse_mode: 'HTML' });
-}
-
-async function handleAdminReply(msg) {
-    if(!bot) return;
-    const adminText = msg.text;
-    const originalText = msg.reply_to_message?.text || "";
-
-    // Ambil ID dari teks pesan yang di-reply
-    const match = originalText.match(/ID:\s*(\d+)/);
-    if (!match || !match[1]) return bot.sendMessage(ADMIN_ID, "⚠️ Gagal Reply. Format pesan user tidak valid.");
-
-    const targetUserId = match[1];
-
-    // Cek Room
-    const { data: room } = await supabase.from('chat_rooms').select('id').eq('user_id', targetUserId).single();
-    if (!room) return bot.sendMessage(ADMIN_ID, "⚠️ Room chat user tidak ditemukan.");
-
-    // Kirim Balasan ke User
-    try {
-        await bot.sendMessage(targetUserId, `👤 <b>ADMIN:</b>\n${adminText}`, { parse_mode: 'HTML' });
-        
-        // Simpan Pesan Admin
-        await supabase.from('chat_messages').insert({
-            room_id: room.id,
-            is_admin: true,
-            content: adminText,
-            is_read: true
-        });
-
-        await bot.sendMessage(ADMIN_ID, `✅ Terkirim ke ${targetUserId}`);
-    } catch (e) {
-        await bot.sendMessage(ADMIN_ID, `❌ Gagal kirim. User mungkin memblokir bot.`);
+        // --- CASE 2: LIVE CHAT FOTO (FORWARD KE ADMIN) ---
+        if (ADMIN_ID && String(chatId) !== String(ADMIN_ID)) {
+             const fileId = msg.photo[msg.photo.length - 1].file_id;
+             await bot.sendPhoto(ADMIN_ID, fileId, { caption: \`📸 <b>Foto dari User</b>\n\${user.first_name} (@\${user.username || '-'}) - \${chatId}\`, parse_mode: 'HTML' });
+             await bot.sendMessage(chatId, "📸 Foto terkirim ke admin.");
+        }
     }
 }
