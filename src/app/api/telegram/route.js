@@ -3,18 +3,18 @@ import TelegramBot from 'node-telegram-bot-api';
 import { createClient } from '@supabase/supabase-js';
 
 // ==================================================================
-// 1. CONFIGURATION & TYPES
+// 1. CONFIGURATION
 // ==================================================================
 
-// Pastikan route ini tidak di-cache oleh Next.js (Wajib untuk Webhook Telegram)
+// Wajib untuk Webhook Telegram agar tidak di-cache
 export const dynamic = 'force-dynamic';
 
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!;
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 const token = process.env.TELEGRAM_BOT_TOKEN;
 const ADMIN_ID = process.env.ADMIN_ID;
 
-// Validasi Environment Variables agar tidak error silent
+// Validasi Environment Variables
 if (!supabaseUrl || !supabaseKey || !token) {
     throw new Error("❌ Missing Environment Variables: Cek SUPABASE_URL, SUPABASE_KEY, atau TELEGRAM_BOT_TOKEN");
 }
@@ -28,23 +28,16 @@ const ADMIN_REKENING = {
     name: "Admin Store" 
 };
 
-// Interface sederhana untuk Update Telegram
-interface TelegramUpdate {
-    update_id: number;
-    message?: TelegramBot.Message;
-    callback_query?: TelegramBot.CallbackQuery;
-}
-
 // ==================================================================
 // 2. HELPER: KEYBOARD DINAMIS
 // ==================================================================
-function generateKeyboard(totalItems: number) {
+function generateKeyboard(totalItems) {
     const topRow = [{ text: "🏷 List Produk" }, { text: "🛍 Voucher" }, { text: "📦 Laporan Stok" }];
     const bottomRow = [{ text: "💰 Deposit" }, { text: "❓ Cara" }, { text: "⚠️ Information" }];
 
     const numberGrid = [];
     if (totalItems > 0) {
-        let currentRow: TelegramBot.KeyboardButton[] = [];
+        let currentRow = [];
         const maxButtons = Math.min(totalItems, 50); // Limit 50 tombol
 
         for (let i = 1; i <= maxButtons; i++) {
@@ -68,9 +61,9 @@ function generateKeyboard(totalItems: number) {
 // ==================================================================
 // 3. MAIN ROUTE HANDLER (POST)
 // ==================================================================
-export async function POST(req: Request) {
+export async function POST(req) {
     try {
-        const update: TelegramUpdate = await req.json();
+        const update = await req.json();
 
         // Handle Text Message
         if (update.message?.text) {
@@ -85,11 +78,9 @@ export async function POST(req: Request) {
              await bot.answerCallbackQuery(update.callback_query.id);
         }
 
-        // Selalu return 200 OK ke Telegram agar tidak retry loop
         return NextResponse.json({ ok: true });
     } catch (error) {
         console.error('SERVER ERROR:', error);
-        // Tetap return 200 OK meskipun error internal aplikasi, supaya Telegram tidak spam webhook
         return NextResponse.json({ ok: true, error: 'Internal Server Error handled' }); 
     }
 }
@@ -98,7 +89,7 @@ export async function POST(req: Request) {
 // 4. LOGIC HANDLERS
 // ==================================================================
 
-async function handleTextMessage(msg: TelegramBot.Message) {
+async function handleTextMessage(msg) {
     const chatId = msg.chat.id;
     const text = msg.text || '';
     const user = msg.from;
@@ -191,7 +182,7 @@ async function handleTextMessage(msg: TelegramBot.Message) {
 // ==========================================
 // 📄 LOGIC TAMPILAN LIST
 // ==========================================
-async function showProductList(chatId: number, markupKeyboard: any) {
+async function showProductList(chatId, markupKeyboard) {
     const { data: products } = await supabase
         .from('products')
         .select('*')
@@ -222,7 +213,7 @@ async function showProductList(chatId: number, markupKeyboard: any) {
 // ==========================================
 // 🛒 LOGIC PROSES BELI
 // ==========================================
-async function handleProductSelection(chatId: number, num: number) {
+async function handleProductSelection(chatId, num) {
     const { data: products } = await supabase
         .from('products')
         .select('*')
@@ -266,7 +257,7 @@ async function handleProductSelection(chatId: number, num: number) {
 // ==========================================
 // 📸 LOGIC HANDLE FOTO
 // ==========================================
-async function handlePhotoMessage(msg: TelegramBot.Message) {
+async function handlePhotoMessage(msg) {
     const chatId = msg.chat.id;
     const user = msg.from;
     
